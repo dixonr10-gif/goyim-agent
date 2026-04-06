@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UsersUserDownloadsgoyim-agent -type f \\\\\\(-name .cursor* -o -name .github -o -name *.md \\\\\\))",
+      "Bash(pip show:*)",
+      "Bash(python3 -c \"import paramiko; print\\(''''paramiko ok''''\\)\")",
+      "Bash(node -e \"const {NodeSSH} = require\\(''''node-ssh''''\\); console.log\\(''''ok''''\\)\")",
+      "Bash(npm install:*)",
+      "Bash(node -e \":*)",
+      "Bash(node scripts/deploy.cjs)",
+      "Bash(ssh -o StrictHostKeyChecking=no root@152.42.167.126 \"cat /root/goyim-agent/data/trade_memory.json\")",
+      "Bash(node:*)",
+      "Bash(ssh:*)",
+      "Bash(C:\\\\Program Files\\\\PuTTY\\\\plink.exe:*)",
+      "Bash(\"C:\\\\Program Files\\\\PuTTY\\\\plink.exe\" -pw goyimAgen9t -batch root@152.42.167.126 \"cat /root/goyim-agent/src/tokenChecker.js\")",
+      "Bash(C:\\\\Program Files\\\\PuTTY\\\\pscp.exe:*)",
+      "Bash(\"C:\\\\Program Files\\\\PuTTY\\\\pscp.exe\" -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\llmAgent.js\" root@152.42.167.126:/root/goyim-agent/src/)",
+      "Bash(\"C:\\\\Program Files\\\\PuTTY\\\\plink.exe\" -pw goyimAgen9t -batch root@152.42.167.126 \"pm2 restart goyim-agent --update-env && echo OK\")",
+      "Bash(plink:*)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\selfImprovingPrompt.js\" root@152.42.167.126:/root/goyim-agent/src/selfImprovingPrompt.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\patternLearner.js\" root@152.42.167.126:/root/goyim-agent/src/patternLearner.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\tokenChecker.js\" root@152.42.167.126:/root/goyim-agent/src/tokenChecker.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\hunterAgent.js\" root@152.42.167.126:/root/goyim-agent/src/hunterAgent.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\poolScanner.js\" root@152.42.167.126:/root/goyim-agent/src/poolScanner.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\llmAgent.js\" root@152.42.167.126:/root/goyim-agent/src/llmAgent.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\tradeMemory.js\" root@152.42.167.126:/root/goyim-agent/src/tradeMemory.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\healerAgent.js\" root@152.42.167.126:/root/goyim-agent/src/healerAgent.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\smartWallets.js\" root@152.42.167.126:/root/goyim-agent/src/smartWallets.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\telegramBot.js\" root@152.42.167.126:/root/goyim-agent/src/telegramBot.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\config.js\" root@152.42.167.126:/root/goyim-agent/config.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\exitStrategy.js\" root@152.42.167.126:/root/goyim-agent/src/exitStrategy.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\positionManager.js\" root@152.42.167.126:/root/goyim-agent/src/positionManager.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\autoSwap.js\" root@152.42.167.126:/root/goyim-agent/src/autoSwap.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\caScanner.js\" root@152.42.167.126:/root/goyim-agent/src/caScanner.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\src-vps\\\\healthCheck.js\" root@152.42.167.126:/root/goyim-agent/src/healthCheck.js)",
+      "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\index.js\" root@152.42.167.126:/root/goyim-agent/index.js)",
+      "Bash(grep -rn \"DLMM\\\\|dlmm\\\\|LB.*Pair\\\\|lb.*pair\" --include=\"*.js\" C:/Users/User/Downloads/goyim-agent/src*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

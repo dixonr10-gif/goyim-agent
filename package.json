@@ -1,0 +1,26 @@
+﻿{
+  "name": "goyim-dlmm-agent",
+  "version": "1.0.0",
+  "description": "AI-powered DLMM liquidity agent on Solana",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@meteora-ag/dlmm": "^1.9.4",
+    "@solana/web3.js": "1.87.6",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.4.0",
+    "node-fetch": "^3.3.2",
+    "rpc-websockets": "^7.4.2",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0"
+  }
+}
+

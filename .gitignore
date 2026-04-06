@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+
+# Node
+node_modules/
+package-lock.json
+
+# Data (runtime state, not code)
+data/
+
+# PM2
+.pm2/
+
+# Deploy script (contains VPS credentials)
+scripts/deploy.cjs
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Nested old folder
+goyim-agent/
+
+# Assets
+assets/
