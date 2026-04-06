@@ -42,7 +42,7 @@ npm run dev
 ## File Structure
 
 ```
-meridian-agent/
+goyim-agent/
 ├── index.js               # Main agent loop
 ├── config.js              # Config dari .env
 ├── src/
