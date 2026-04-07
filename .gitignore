@@ -1,6 +1,7 @@
 # Secrets
 .env
 .env.*
+github.txt
 
 # Node
 node_modules/
