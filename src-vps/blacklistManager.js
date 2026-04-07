@@ -12,7 +12,7 @@ const AUTO_BL_THRESHOLD = 5; // auto-blacklist after N losses
 const BLACKLIST_DECAY_DAYS = 7; // auto-unblacklist after N days
 
 // Tokens that are ALWAYS blacklisted regardless of .env (large-cap, not meme)
-const HARDCODED_BLACKLIST = new Set(["JUP", "JUPSOL", "JLP", "WBTC", "WETH", "CBBTC", "RAY", "ORCA"]);
+const HARDCODED_BLACKLIST = new Set(["JUP", "JUPSOL", "JLP", "WBTC", "WETH", "CBBTC", "RAY", "ORCA", "BABYTRUMP"]);
 
 const STATIC_BLACKLIST = [
   ...HARDCODED_BLACKLIST,
