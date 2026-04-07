@@ -92,6 +92,7 @@ function registerCommands() {
   });
   bot.command("winrate", async (ctx) => { await ctx.replyWithHTML(buildWinRateMessage(), mainMenu()); });
   bot.command("history", async (ctx) => { await ctx.replyWithHTML(buildHistoryMessage(), mainMenu()); });
+  bot.command("lessons", async (ctx) => { await ctx.replyWithHTML(await buildLessonsMessage(), mainMenu()); });
 
   bot.command("positions", async (ctx) => {
     const positions = getOpenPositions();
@@ -550,6 +551,10 @@ function registerCallbacks() {
   bot.action("history", async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(buildHistoryMessage(), { parse_mode: "HTML", ...mainMenu() });
+  });
+  bot.action("lessons", async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(await buildLessonsMessage(), { parse_mode: "HTML", ...mainMenu() });
   });
   bot.action("positions", async (ctx) => {
     await ctx.answerCbQuery();
@@ -1116,11 +1121,35 @@ function buildHistoryMessage() {
   return msg;
 }
 
+async function buildLessonsMessage() {
+  try {
+    const { getRecentLessons } = await import("./dailyLessons.js");
+    const lessons = getRecentLessons(7);
+    if (lessons.length === 0) return `<b>📚 Lessons</b>\n\n<i>Belum ada data. Lesson otomatis tersimpan setiap daily report jam 7 AM WIB.</i>`;
+
+    let msg = `<b>📚 Lessons 7 Hari Terakhir</b>\n${"━".repeat(25)}\n\n`;
+    for (const l of [...lessons].reverse()) {
+      const d = new Date(l.date + "T00:00:00Z");
+      const day = d.toLocaleDateString("id-ID", { day: "2-digit", month: "short", timeZone: "UTC" });
+      const pnlStr = l.totalPnlSol != null ? `${l.totalPnlSol >= 0 ? "+" : ""}${l.totalPnlSol} SOL` : "?";
+      msg += `📅 <b>${day}</b>: WR ${l.winRate ?? "?"}% | ${pnlStr} | ${l.tradesCount ?? 0} trades\n`;
+      if (l.topWin && l.topWin !== "—") msg += `  📈 Best: ${l.topWin}`;
+      if (l.worstLoss && l.worstLoss !== "—") msg += ` | 📉 Worst: ${l.worstLoss}`;
+      if (l.topWin && l.topWin !== "—") msg += `\n`;
+      if (l.lesson) msg += `  💡 ${esc(l.lesson)}\n`;
+      msg += `\n`;
+    }
+    return msg;
+  } catch (err) {
+    return `<b>📚 Lessons</b>\n\n<i>Error: ${esc(err.message)}</i>`;
+  }
+}
+
 function mainMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("📊 Status", "status"), Markup.button.callback("📋 Positions", "positions")],
     [Markup.button.callback("👛 Wallet", "wallet"), Markup.button.callback("🏆 Win Rate", "winrate")],
-    [Markup.button.callback("📜 History", "history"), Markup.button.callback("📋 Daily Review", "review")],
+    [Markup.button.callback("📜 History", "history"), Markup.button.callback("📋 Daily Review", "review"), Markup.button.callback("📚 Lessons", "lessons")],
     [Markup.button.callback("🔄 Refresh", "refresh")],
     [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("👀 Watchlist", "btn_watchlist")],
     [Markup.button.callback("⏳ Cooldown", "btn_cooldown"), Markup.button.callback("📋 Logs", "btn_logs")],

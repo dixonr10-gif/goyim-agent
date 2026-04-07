@@ -3,6 +3,7 @@
 import { getFullStats } from "./tradeMemory.js";
 import { getOpenPositions } from "./positionManager.js";
 import { getSOLBalance, getWalletAddress, getSolPriceUSD } from "./walletInfo.js";
+import { saveDailyLesson } from "./dailyLessons.js";
 
 function getNext7amWIB() {
   const now = new Date();
@@ -72,6 +73,27 @@ export async function generateDailyPnLReport() {
     msg += `🔄 Total Trades: <b>${todayTrades.length}</b>\n\n`;
     msg += `💼 Wallet: <b>${solBal.toFixed(2)} SOL</b> ($${(solBal * solPrice).toFixed(0)} USD)\n`;
     msg += `📊 Open Positions: <b>${openPos.length}</b>`;
+
+    // Save daily lesson for /lessons command
+    try {
+      const totalPnlSol = todayTrades.reduce((a, t) => a + ((parseFloat(t.pnlPercent ?? 0) / 100) * (t.solDeployed ?? 0)), 0);
+      const lessonText = todayTrades.length === 0
+        ? "No trades today"
+        : todayTrades.length <= 2
+          ? `Low activity: only ${todayTrades.length} trade(s). Need more pool diversity.`
+          : parseFloat(wr) >= 60
+            ? `Good day — WR ${wr}% with ${todayTrades.length} trades. Keep current strategy.`
+            : `WR ${wr}% below target. Review pool selection and entry timing.`;
+      saveDailyLesson({
+        winRate: parseFloat(wr) || 0,
+        totalPnlSol: parseFloat(totalPnlSol.toFixed(4)),
+        topWin: bestPnl,
+        worstLoss: worstPnl,
+        tradesCount: todayTrades.length,
+        lesson: lessonText,
+        planBesok: parseFloat(wr) >= 50 ? "Continue current approach" : "Widen pool scan, review blacklist",
+      });
+    } catch {}
 
     return msg;
   } catch (err) {
