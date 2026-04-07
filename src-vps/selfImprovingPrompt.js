@@ -118,24 +118,47 @@ async function updateBrain(stats, currentBrain) {
     const MAX_RED_FLAGS = 3;
 
     // Strip rules that set thresholds too high
+    const MAX_APR = parseInt(process.env.MAX_BRAIN_APR) || 30;
     const cleanRules = (update.selfWrittenRules ?? []).filter(rule => {
       const ruleStr = rule.toLowerCase();
-      // Remove rules blocking all meme tokens or requiring oppScore/confidence above limits
-      const oppMatch = ruleStr.match(/opportunityscore\s*[>≥]\s*(\d+)/);
-      const confMatch = ruleStr.match(/confidence\s*[>≥]\s*(\d+)/);
+      // Match various ways LLM writes thresholds: oppScore, opportunityScore, opp score
+      const oppMatch = ruleStr.match(/(?:opp(?:ortunity)?[\s_-]*score)\s*[>≥=]+\s*(\d+)/);
+      const confMatch = ruleStr.match(/confidence\s*[>≥=]+\s*(\d+)/);
+      const aprMatch = ruleStr.match(/(?:fee\s*)?apr\s*[>≥=]+\s*(\d+)/);
       if (oppMatch && parseInt(oppMatch[1]) > MAX_OPPSCORE) {
-        console.warn(`  ⚠️ Brain: removed over-restrictive rule: "${rule.slice(0,80)}"`);
+        console.warn(`  ⚠️ Brain: blocked oppScore > ${MAX_OPPSCORE}: "${rule.slice(0,80)}"`);
         return false;
       }
       if (confMatch && parseInt(confMatch[1]) > MAX_CONFIDENCE) {
-        console.warn(`  ⚠️ Brain: removed over-restrictive rule: "${rule.slice(0,80)}"`);
+        console.warn(`  ⚠️ Brain: blocked confidence > ${MAX_CONFIDENCE}: "${rule.slice(0,80)}"`);
+        return false;
+      }
+      if (aprMatch && parseInt(aprMatch[1]) > MAX_APR) {
+        console.warn(`  ⚠️ Brain: blocked APR > ${MAX_APR}%: "${rule.slice(0,80)}"`);
+        return false;
+      }
+      // Block rules that say "don't use" bidask/curve strategies
+      if (ruleStr.includes("do not use") && (ruleStr.includes("bid") || ruleStr.includes("curve"))) {
+        console.warn(`  ⚠️ Brain: blocked strategy restriction: "${rule.slice(0,80)}"`);
+        return false;
+      }
+      // Block rules requiring "100+ trades" or "top 20%"
+      if (ruleStr.includes("100+ trades") || ruleStr.includes("top 20%") || ruleStr.includes("top 10%")) {
+        console.warn(`  ⚠️ Brain: blocked unrealistic requirement: "${rule.slice(0,80)}"`);
         return false;
       }
       return true;
     });
 
-    // Cap red flags at MAX_RED_FLAGS
-    const cleanRedFlags = (update.redFlags ?? []).slice(0, MAX_RED_FLAGS);
+    // Cap red flags at MAX_RED_FLAGS and strip over-restrictive ones
+    const cleanRedFlags = (update.redFlags ?? []).filter(flag => {
+      const f = flag.toLowerCase();
+      const oppMatch = f.match(/(?:opp(?:ortunity)?[\s_-]*score)\s*[<≤]\s*(\d+)/);
+      if (oppMatch && parseInt(oppMatch[1]) > MAX_OPPSCORE) return false;
+      const aprMatch = f.match(/(?:fee\s*)?apr\s*[<≤]\s*(\d+)/);
+      if (aprMatch && parseInt(aprMatch[1]) > MAX_APR) return false;
+      return true;
+    }).slice(0, MAX_RED_FLAGS);
     if ((update.redFlags ?? []).length > MAX_RED_FLAGS) {
       console.warn(`  ⚠️ Brain: trimmed red flags from ${update.redFlags.length} to ${MAX_RED_FLAGS}`);
     }
