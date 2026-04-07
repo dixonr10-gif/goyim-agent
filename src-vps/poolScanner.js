@@ -159,11 +159,11 @@ async function enrichWithDexScreener(pools) {
 export async function scanPools() {
   console.log("🔍 Scanning pools...");
   try {
-    // Scan 300 pools: 6 pages by volume + 6 pages by fees (30 per sort = 300 each, deduped)
+    // Scan 400 pools: 8 pages by volume + 8 pages by fees (50 per page, deduped)
     const allPools = [];
     const seen = new Set();
     for (const sortKey of ["volume", "fees"]) {
-      for (let page = 1; page <= 6; page++) {
+      for (let page = 1; page <= 8; page++) {
         const pools = await fetchPage(page, sortKey);
         if (pools.length === 0) break;
         for (const p of pools) {

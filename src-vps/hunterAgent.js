@@ -14,7 +14,7 @@ import { maybeUpdateBrain, getBrainContextForLLM } from "./selfImprovingPrompt.j
 import { notifyPositionOpened, notifyPositionClosed, notifyAgentDecision, notifyError, notifyMessage, isAgentPaused } from "./telegramBot.js";
 import { autoSwapTokensToSOL } from "./autoSwap.js";
 import { isOnCooldown, getCooldownRemaining, extractTokenSymbol, setCooldown } from "./cooldownManager.js";
-import { isTokenBlacklisted } from "./blacklistManager.js";
+import { isTokenBlacklisted, decayBlacklist } from "./blacklistManager.js";
 import { checkSmartWalletOverlap } from "./smartWallets.js";
 import { recordLastRun } from "./healthCheck.js";
 import { recordHunterRunResult } from "./thresholdEvolver.js";
@@ -86,8 +86,8 @@ async function fetchDexScreenerTrending() {
     if (tokens.length === 0) return [];
     console.log(`  [DexTrending] Found ${tokens.length} Solana trending tokens`);
 
-    // Batch lookup: find Meteora DLMM pools for each (max 15 to avoid rate limits)
-    for (const mint of tokens.slice(0, 15)) {
+    // Batch lookup: find Meteora DLMM pools for each (max 25 to widen candidate set)
+    for (const mint of tokens.slice(0, 25)) {
       try {
         const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(8000) });
         const data = await res.json();
@@ -164,6 +164,9 @@ export async function runHunter() {
   console.log("═".repeat(55));
 
   try {
+    // Decay expired blacklists (7d)
+    try { decayBlacklist(); } catch {}
+
     // Learning systems
     const { stats, trades: allTrades } = getFullStats();
     await maybeUpdateBrain(stats);

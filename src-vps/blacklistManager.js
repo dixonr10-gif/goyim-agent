@@ -8,7 +8,8 @@ const LOSS_FILE = path.resolve("data/token_losses.json");
 const OOR_FILE = path.resolve("data/oor_strikes.json");
 const PERM_BL_FILE = path.resolve("data/permanent_blacklist.json");
 const OOR_COOLDOWN_FILE = path.resolve("data/oor_cooldown.json");
-const AUTO_BL_THRESHOLD = 3; // auto-blacklist after N losses
+const AUTO_BL_THRESHOLD = 5; // auto-blacklist after N losses
+const BLACKLIST_DECAY_DAYS = 7; // auto-unblacklist after N days
 
 // Tokens that are ALWAYS blacklisted regardless of .env (large-cap, not meme)
 const HARDCODED_BLACKLIST = new Set(["JUP", "JUPSOL", "JLP", "WBTC", "WETH", "CBBTC", "RAY", "ORCA"]);
@@ -145,8 +146,8 @@ function applyCoordinationRules(sym) {
   const lossCount = losses[sym]?.count ?? 0;
   const oorCount = oor[sym] ?? 0;
 
-  // Rule 4: loss >= 5 → permanent blacklist
-  if (lossCount >= 5) {
+  // Rule 4: loss >= 7 → permanent blacklist
+  if (lossCount >= 7) {
     const perm = loadPermBL();
     if (!perm[sym]) {
       perm[sym] = { reason: `${lossCount} losses`, since: new Date().toISOString() };
@@ -223,4 +224,29 @@ export function getBlacklist() {
   const autoBL = Object.entries(losses).filter(([, v]) => (v?.count ?? 0) >= AUTO_BL_THRESHOLD).map(([s]) => s);
   const permBL = Object.keys(perm);
   return [...new Set([...STATIC_BLACKLIST, ...autoBL, ...permBL])];
+}
+
+// Time decay: auto-unblacklist tokens after BLACKLIST_DECAY_DAYS
+// Does NOT touch: hardcoded, static (.env), or permanent blacklist
+export function decayBlacklist() {
+  const losses = loadLosses();
+  const perm = loadPermBL();
+  const now = Date.now();
+  const decayMs = BLACKLIST_DECAY_DAYS * 86_400_000;
+  let decayed = 0;
+
+  for (const [sym, entry] of Object.entries(losses)) {
+    if ((entry?.count ?? 0) < AUTO_BL_THRESHOLD) continue;
+    if (!entry.blacklistedAt) continue;
+    // Skip permanent, hardcoded, or static tokens
+    if (perm[sym] || HARDCODED_BLACKLIST.has(sym) || STATIC_BLACKLIST.includes(sym)) continue;
+    const age = now - new Date(entry.blacklistedAt).getTime();
+    if (age >= decayMs) {
+      console.log(`  ♻️ Unblacklisted: ${sym} (expired ${Math.floor(age / 86_400_000)}d)`);
+      losses[sym] = { count: 2, blacklistedAt: null }; // drop below threshold but keep history
+      decayed++;
+    }
+  }
+  if (decayed > 0) saveLosses(losses);
+  return decayed;
 }
