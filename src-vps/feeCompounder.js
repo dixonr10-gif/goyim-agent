@@ -29,30 +29,29 @@ export async function checkAndClaimFees(position, notifyFn = null) {
     const posData = userPositions.find(p => p.publicKey.toString() === position.positionAddress);
     if (!posData) return;
 
-    // Check if fees exist
-    const feeX = posData.positionData.feeX?.toNumber?.() ?? 0;
-    const feeY = posData.positionData.feeY?.toNumber?.() ?? 0;
-    if (feeX === 0 && feeY === 0) return;
-
-    // Estimate USD value of fees
+    // Calculate fees from bin data (same source as getPositionValue)
     const WSOL = "So11111111111111111111111111111111111111112";
     const tokenXMint = dlmmPool.tokenX?.publicKey?.toString();
     const xIsSol = tokenXMint === WSOL;
     const decX = dlmmPool.tokenX?.decimal ?? dlmmPool.tokenX?.decimals ?? 9;
     const decY = dlmmPool.tokenY?.decimal ?? dlmmPool.tokenY?.decimals ?? 9;
 
-    const feeXHuman = feeX / (10 ** decX);
-    const feeYHuman = feeY / (10 ** decY);
-    const feeSol = xIsSol ? feeXHuman : feeYHuman;
-    const feeToken = xIsSol ? feeYHuman : feeXHuman;
+    let binFeeX = 0, binFeeY = 0;
+    for (const bin of posData.positionData?.positionBinData ?? []) {
+      binFeeX += parseFloat(bin.positionFeeXAmount ?? 0) / (10 ** decX);
+      binFeeY += parseFloat(bin.positionFeeYAmount ?? 0) / (10 ** decY);
+    }
+    const feeSol = xIsSol ? binFeeX : binFeeY;
+    const feeToken = xIsSol ? binFeeY : binFeeX;
+    if (feeSol < 0.001 && feeToken < 0.001) return;
 
     // SOL price
     let solPrice = 80;
     try {
-      const { default: fetchFn } = await import("node-fetch");
       const pr = await fetch("https://lite.jupiterapi.com/price?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
       const pd = await pr.json();
-      solPrice = pd?.data?.So11111111111111111111111111111111111111112?.price ?? 80;
+      const p = pd?.data?.So11111111111111111111111111111111111111112?.price;
+      if (typeof p === "number" && p > 10) solPrice = p;
     } catch {}
 
     // Token price via pool active bin
@@ -62,6 +61,7 @@ export async function checkAndClaimFees(position, notifyFn = null) {
     const tokenFeeUsd = feeToken * tokenPriceUsd;
     const solFeeUsd = feeSol * solPrice;
     const totalUsd = tokenFeeUsd + solFeeUsd;
+    console.log(`  [Fees] ${position.poolName ?? position.pool?.slice(0,8)}: $${totalUsd.toFixed(2)} claimable (sol=$${solFeeUsd.toFixed(2)} token=$${tokenFeeUsd.toFixed(2)})`);
 
     if (totalUsd < MIN_CLAIM_USD) return;
 

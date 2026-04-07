@@ -2,6 +2,7 @@
 import { createRequire } from "module";
 import { getFullStats } from "./tradeMemory.js";
 import { getOpenPositions } from "./positionManager.js";
+import { getPortfolioStats } from "./meteoraPnl.js";
 
 const require = createRequire(import.meta.url);
 
@@ -25,55 +26,76 @@ function fmtUsd(n) {
   return (n >= 0 ? "+$" : "-$") + Math.abs(n).toFixed(2);
 }
 
-// ── Data ────────────────────────────────────────────────────────────
-function getCardData(period = "weekly") {
+// ── Data (Meteora API first, local fallback) ────────────────────────
+async function getCardDataMeteora(period) {
+  const stats = await getPortfolioStats(period);
+  if (!stats || stats.totalPools === 0) return null;
+  const openPos = getOpenPositions().length;
+  return {
+    period, dateRange: `${stats.startDate} — ${stats.endDate}`,
+    days: stats.days, openPositions: openPos,
+    summary: {
+      totalPnlUsd: stats.totalPnlUsd,
+      totalPositions: stats.totalPools,
+      wins: stats.wins, winRate: stats.winRate,
+      activeDays: stats.days.length,
+    },
+    allStats: {
+      totalTrades: stats.totalPools,
+      hitRate: stats.winRate,
+      wins: stats.wins,
+      losses: stats.losses,
+      totalPnlSol: stats.totalPnlSol?.toFixed(4) ?? "0",
+      totalFeesUsd: stats.totalFeesUsd?.toFixed(2) ?? "0",
+      bestPool: stats.bestPool ? `${stats.bestPool.name} ${fmtUsd(stats.bestPool.pnlUsd)}` : null,
+      worstPool: stats.worstPool ? `${stats.worstPool.name} ${fmtUsd(stats.worstPool.pnlUsd)}` : null,
+    },
+    source: "meteora",
+  };
+}
+
+function getCardDataLocal(period) {
   const { trades, stats } = getFullStats();
   const closed = trades.filter(t => t.closedAt);
   const now = new Date();
-
   let startDate;
   if (period === "daily") {
     startDate = new Date(now); startDate.setUTCHours(0, 0, 0, 0);
   } else if (period === "monthly") {
     startDate = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1);
   } else {
-    startDate = new Date(now.getTime() - 7 * 86400000);
-    startDate.setUTCHours(0, 0, 0, 0);
+    startDate = new Date(now.getTime() - 7 * 86400000); startDate.setUTCHours(0, 0, 0, 0);
   }
-
   const filtered = closed.filter(t => new Date(t.closedAt) >= startDate);
-
-  // Group by date
   const dayMap = {};
   for (const t of filtered) {
     const d = t.closedAt.slice(0, 10);
     if (!dayMap[d]) dayMap[d] = { date: d, pnlUsd: 0, positions: 0, wins: 0, losses: 0 };
-    const pnl = parseFloat(t.pnlPercent ?? 0);
-    const solDep = t.solDeployed ?? 0;
-    const solPrice = t.solPriceAtEntry ?? 80;
-    dayMap[d].pnlUsd += (pnl / 100) * solDep * solPrice;
+    dayMap[d].pnlUsd += (parseFloat(t.pnlPercent ?? 0) / 100) * (t.solDeployed ?? 0) * (t.solPriceAtEntry ?? 80);
     dayMap[d].positions++;
     if (t.outcome === "win") dayMap[d].wins++;
     if (t.outcome === "loss") dayMap[d].losses++;
   }
-
   const days = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
-  const totalPnlUsd = days.reduce((s, d) => s + d.pnlUsd, 0);
   const totalPos = filtered.length;
   const wins = filtered.filter(t => t.outcome === "win").length;
-  const winRate = totalPos > 0 ? ((wins / totalPos) * 100).toFixed(0) : "0";
-  const activeDays = days.length;
   const openPos = getOpenPositions().length;
-
-  const endStr = now.toISOString().slice(0, 10);
-  const startStr = startDate.toISOString().slice(0, 10);
-
   return {
-    period, dateRange: `${startStr} — ${endStr}`,
+    period, dateRange: `${startDate.toISOString().slice(0,10)} — ${now.toISOString().slice(0,10)}`,
     days, openPositions: openPos,
-    summary: { totalPnlUsd, totalPositions: totalPos, wins, winRate, activeDays },
-    allStats: stats,
+    summary: { totalPnlUsd: days.reduce((s, d) => s + d.pnlUsd, 0), totalPositions: totalPos, wins, winRate: totalPos > 0 ? ((wins / totalPos) * 100).toFixed(0) : "0", activeDays: days.length },
+    allStats: stats, source: "local",
   };
+}
+
+async function getCardData(period = "weekly") {
+  try {
+    const meteora = await getCardDataMeteora(period);
+    if (meteora) return meteora;
+  } catch (err) {
+    console.log(`[PnlCard] Meteora fallback: ${err.message}`);
+  }
+  return getCardDataLocal(period);
 }
 
 // ── Canvas ──────────────────────────────────────────────────────────
@@ -202,42 +224,58 @@ function generatePnlCard(data) {
   // ── Stats grid ──────────────────────────────────────────────────
   const statY = divY + 16;
   const stats = data.allStats ?? {};
+  const feesVal = stats.totalFeesUsd ? `$${parseFloat(stats.totalFeesUsd).toLocaleString("en", { maximumFractionDigits: 0 })}` : "$0";
   const statItems = [
-    { label: "TOTAL TRADES", value: String(stats.totalTrades ?? 0) },
-    { label: "WIN RATE", value: `${stats.hitRate ?? 0}%`, color: "#4ade80" },
-    { label: "TOTAL P&L SOL", value: `${stats.totalPnlSol ?? 0}` },
-    { label: "AVG P&L", value: `${stats.avgPnlPercent ?? 0}%` },
+    { label: "WIN RATE", value: `${stats.hitRate ?? 0}%  (W:${stats.wins ?? 0} L:${stats.losses ?? 0})`, color: "#4ade80" },
+    { label: "FEES EARNED", value: feesVal, color: "#facc15" },
+    { label: "BEST POOL", value: stats.bestPool ?? "—", color: "#4ade80" },
+    { label: "WORST POOL", value: stats.worstPool ?? "—", color: "#f87171" },
   ];
   for (let i = 0; i < statItems.length; i++) {
     const sx = 24 + (i % 2) * 240;
     const sy = statY + Math.floor(i / 2) * 36;
     ctx.font = "9px sans-serif"; ctx.fillStyle = "#444444";
     ctx.fillText(statItems[i].label, sx, sy);
-    ctx.font = "bold 14px sans-serif"; ctx.fillStyle = statItems[i].color ?? "#cccccc";
-    ctx.fillText(statItems[i].value, sx, sy + 18);
+    ctx.font = "bold 13px sans-serif"; ctx.fillStyle = statItems[i].color ?? "#cccccc";
+    ctx.fillText(String(statItems[i].value).slice(0, 28), sx, sy + 18);
   }
 
-  // ── Timestamp ───────────────────────────────────────────────────
+  // ── Source + Timestamp ──────────────────────────────────────────
+  const srcLabel = data.source === "meteora" ? "Meteora (fees included)" : "local";
   ctx.textAlign = "right"; ctx.font = "9px sans-serif"; ctx.fillStyle = "#333333";
-  ctx.fillText(new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC", W - 24, H - 12);
+  ctx.fillText(`${srcLabel}  ·  ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, W - 24, H - 12);
   ctx.textAlign = "left";
 
   return canvas.toBuffer("image/png");
 }
 
+// ── Fabriq URL helper ──────────────────────────────────────────────
+async function getFabriqUrl() {
+  try {
+    const { getWalletAddress } = await import("./walletInfo.js");
+    const addr = await getWalletAddress();
+    return `https://fabriq.trade/portfolio-beta?walletAddress=${addr}`;
+  } catch { return null; }
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 export async function sendPnlCard(bot, chatId, period = "weekly") {
   try {
-    const data = getCardData(period);
+    const data = await getCardData(period);
     const buffer = generatePnlCard(data);
-    await bot.telegram.sendPhoto(chatId, { source: buffer }, {
-      caption: `📊 Agent Goyim — ${period} PnL`,
-    });
+    const fabriqUrl = await getFabriqUrl();
+    const src = data.source === "meteora" ? " (Meteora)" : "";
+    const caption = `📊 Agent Goyim — ${period} PnL${src}` +
+      (fabriqUrl ? `\n🔍 Detail: ${fabriqUrl}` : "");
+    const { Markup } = await import("telegraf");
+    const keyboard = fabriqUrl
+      ? { reply_markup: Markup.inlineKeyboard([[Markup.button.url("📈 View on Fabriq", fabriqUrl)]]).reply_markup }
+      : {};
+    await bot.telegram.sendPhoto(chatId, { source: buffer }, { caption, ...keyboard });
   } catch (err) {
     console.log(`[PnlCard] Error: ${err.message}`);
-    // Fallback to text
     try {
-      const data = getCardData(period);
+      const data = await getCardData(period);
       const s = data.summary;
       await bot.telegram.sendMessage(chatId,
         `📊 <b>PnL ${period}</b>\n${data.dateRange}\n\nTrades: ${s.totalPositions} | WR: ${s.winRate}% | PnL: ${fmtUsd(s.totalPnlUsd)}`,

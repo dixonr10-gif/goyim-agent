@@ -18,6 +18,7 @@ import { isTokenBlacklisted } from "./blacklistManager.js";
 import { checkSmartWalletOverlap } from "./smartWallets.js";
 import { recordLastRun } from "./healthCheck.js";
 import { recordHunterRunResult } from "./thresholdEvolver.js";
+import { getPoolScoreAdjustment, recordPoolDeploy } from "./poolMemory.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
@@ -121,8 +122,33 @@ async function fetchDexScreenerTrending() {
   return trendingPools;
 }
 
+const DAILY_LOSS_LIMIT_SOL = 5;
+
+function getDailyLossSol() {
+  try {
+    const { trades } = getFullStats();
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    return (trades ?? [])
+      .filter(t => t.closedAt && new Date(t.closedAt) >= todayStart && t.outcome === "loss")
+      .reduce((sum, t) => sum + Math.abs((t.pnlPercent ?? 0) / 100 * (t.solDeployed ?? 0)), 0);
+  } catch { return 0; }
+}
+
+export function getDailyLossInfo() {
+  const loss = getDailyLossSol();
+  return { lossSol: loss, limit: DAILY_LOSS_LIMIT_SOL, paused: loss >= DAILY_LOSS_LIMIT_SOL };
+}
+
 export async function runHunter() {
   if (isAgentPaused()) { console.log("⏸️ [Hunter] paused"); return; }
+
+  // Daily loss limit
+  const dailyLoss = getDailyLossSol();
+  if (dailyLoss >= DAILY_LOSS_LIMIT_SOL) {
+    console.log(`[Hunter] Daily loss limit reached: ${dailyLoss.toFixed(2)}/${DAILY_LOSS_LIMIT_SOL} SOL — paused until 00:00 UTC`);
+    return;
+  }
 
   if (Date.now() < lowBalanceCooldownUntil) {
     const rem = Math.ceil((lowBalanceCooldownUntil - Date.now()) / 60_000);
@@ -354,6 +380,16 @@ export async function runHunter() {
               }
             }
 
+            // ── Dynamic bin count based on volatility ──────────────────
+            const absChange1h = Math.abs(priceChange1h ?? 0);
+            let binCount;
+            if (absChange1h < 5) binCount = 50;
+            else if (absChange1h < 15) binCount = 70;
+            else if (absChange1h < 30) binCount = 90;
+            else binCount = 110;
+            decision.binRange = binCount;
+            console.log(`  [Bins] ${binCount} bins (1h change: ${(priceChange1h ?? 0) >= 0 ? "+" : ""}${(priceChange1h ?? 0).toFixed(1)}%)`);
+
             // ── Weighted scoring & position sizing ─────────────────────
             let dynamicSol = config.maxSolPerPosition;
             let totalScore = 0;
@@ -425,6 +461,19 @@ export async function runHunter() {
                 otherScore * 0.25
               );
 
+              // 5) Pool memory adjustment
+              const poolMem = getPoolScoreAdjustment(pool.address);
+              if (poolMem.mem) {
+                console.log(`  📚 Pool memory: ${poolMem.mem.deployCount}x deploy, WR ${poolMem.mem.winRate ?? "?"}%, avg ${poolMem.mem.avgPnlPct >= 0 ? "+" : ""}${poolMem.mem.avgPnlPct}%`);
+              }
+              if (poolMem.adjustment === -999) {
+                console.log(`  📚 [PoolMem] SKIP: ${poolMem.reason}`);
+                momentumSkip = true;
+              } else if (poolMem.adjustment !== 0) {
+                totalScore = Math.max(0, Math.min(100, totalScore + poolMem.adjustment));
+                console.log(`  📚 [PoolMem] score ${poolMem.adjustment > 0 ? "+" : ""}${poolMem.adjustment} (${poolMem.reason})`);
+              }
+
               console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → total=${totalScore}/100`);
 
               if (totalScore > 85) dynamicSol = 5;
@@ -444,6 +493,11 @@ export async function runHunter() {
             if (existing) {
               console.log(`⛔ Skip: pool ${pool.address.slice(0,8)}... already has open position (${existing.id})`);
             } else {
+            // Last-gate blacklist check — catches tokens blacklisted after initial filter
+            const lastGateBL = isTokenBlacklisted(pool.name);
+            if (lastGateBL.blacklisted) {
+              console.log(`⛔ Blocked: ${pool.name} is blacklisted (last-gate check) — ${lastGateBL.reason}`);
+            } else {
             const origMax = config.maxSolPerPosition;
             try {
               config.maxSolPerPosition = dynamicSol;
@@ -460,6 +514,7 @@ export async function runHunter() {
                 entryTokenPrice: newPos?.entryTokenPrice,
                 decision,
               });
+              recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });
               if (newPos) { hunterOpenedPosition = true; await notifyPositionOpened(newPos, decision); }
             } catch (err) {
               config.maxSolPerPosition = origMax;
@@ -484,6 +539,7 @@ export async function runHunter() {
                 await notifyError(`[Hunter] ${msg.slice(0, 100)}`);
               }
             }
+            } // end else (not blacklisted last-gate)
             } // end else (no existing position)
             } // end if (!momentumSkip && confidence >= 60)
           }

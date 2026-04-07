@@ -29,10 +29,25 @@ startDailyReviewScheduler(tgBot, config.telegramChatId);
 startDailyPnLReport(tgBot, config.telegramChatId);
 
 // ── Healer: starts immediately, runs every 2min ───────────────────────────────
-runHealer();
-setInterval(() => {
-  runHealer().catch(err => console.error("[Healer interval error]", err.message));
+global.lastHealerRun = Date.now();
+let _healerInterval = setInterval(() => {
+  runHealer().then(() => { global.lastHealerRun = Date.now(); }).catch(err => console.error("[Healer interval error]", err.message));
 }, HEALER_INTERVAL_MS);
+runHealer().then(() => { global.lastHealerRun = Date.now(); });
+
+// ── Watchdog: restart healer if stale > 5min ──────────────────────────────────
+setInterval(async () => {
+  const staleMs = Date.now() - (global.lastHealerRun || 0);
+  if (staleMs > 5 * 60 * 1000) {
+    console.error(`[Watchdog] Healer STALE ${Math.round(staleMs / 60000)}m → restarting`);
+    try { await notifyMessage(`⚠️ Watchdog: Healer STALE ${Math.round(staleMs / 60000)}m!\n🔄 Auto-restarting...`); } catch {}
+    clearInterval(_healerInterval);
+    _healerInterval = setInterval(() => {
+      runHealer().then(() => { global.lastHealerRun = Date.now(); }).catch(err => console.error("[Healer interval error]", err.message));
+    }, HEALER_INTERVAL_MS);
+    runHealer().then(() => { global.lastHealerRun = Date.now(); }).catch(() => {});
+  }
+}, 60 * 1000);
 
 // ── Emergency price check: every 1min (lightweight DexScreener only) ──────────
 setInterval(() => {

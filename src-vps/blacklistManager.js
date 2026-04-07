@@ -29,8 +29,24 @@ function extractSymbols(poolName) {
 }
 
 // ── Token loss tracking ─────────────────────────────────────────────
+// Format: { "SYM": { count: N, blacklistedAt: ISO|null } }
+// Migrates from old format { "SYM": N } on read
 function loadLosses() {
-  try { return JSON.parse(fs.readFileSync(LOSS_FILE, "utf-8")); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(LOSS_FILE, "utf-8"));
+    let migrated = false;
+    const data = {};
+    for (const [sym, val] of Object.entries(raw)) {
+      if (typeof val === "number") {
+        data[sym] = { count: val, blacklistedAt: val >= AUTO_BL_THRESHOLD ? new Date().toISOString() : null };
+        migrated = true;
+      } else {
+        data[sym] = val;
+      }
+    }
+    if (migrated) saveLosses(data);
+    return data;
+  } catch { return {}; }
 }
 function saveLosses(data) {
   try {
@@ -38,28 +54,55 @@ function saveLosses(data) {
     fs.writeFileSync(LOSS_FILE, JSON.stringify(data, null, 2));
   } catch {}
 }
+function getLossCount(losses, sym) {
+  const entry = losses[sym];
+  return typeof entry === "number" ? entry : (entry?.count ?? 0);
+}
 
 export function recordTokenLoss(poolName) {
   const syms = extractSymbols(poolName).filter(s => !QUOTE_TOKENS.has(s));
   if (syms.length === 0) return;
   const sym = syms[0];
   const losses = loadLosses();
-  losses[sym] = (losses[sym] ?? 0) + 1;
+  const prev = losses[sym]?.count ?? 0;
+  const newCount = prev + 1;
+  losses[sym] = {
+    count: newCount,
+    blacklistedAt: newCount >= AUTO_BL_THRESHOLD ? (losses[sym]?.blacklistedAt ?? new Date().toISOString()) : null,
+  };
   saveLosses(losses);
-  if (losses[sym] >= AUTO_BL_THRESHOLD) {
-    console.log(`  [AutoBlacklist] ${sym} blocked — ${losses[sym]} losses`);
+  if (newCount >= AUTO_BL_THRESHOLD) {
+    console.log(`  [AutoBlacklist] ${sym} blocked — ${newCount} losses`);
   }
-  return { symbol: sym, count: losses[sym] };
+  return { symbol: sym, count: newCount };
 }
 
-export function getTokenLosses() { return loadLosses(); }
+export function getTokenLosses() {
+  const losses = loadLosses();
+  // Return { SYM: count } for backward compat with display code that expects numbers
+  const result = {};
+  for (const [sym, val] of Object.entries(losses)) {
+    result[sym] = typeof val === "number" ? val : (val?.count ?? 0);
+  }
+  return result;
+}
+
+// Return full data with timestamps for display filtering
+export function getTokenLossesWithDates() {
+  return loadLosses();
+}
 
 export function manualBlacklist(symbol) {
-  const upper = symbol.toUpperCase();
+  // Extract token symbols — handles both "STONKS" and "stonks-SOL" inputs
+  const syms = extractSymbols(symbol).filter(s => !QUOTE_TOKENS.has(s));
+  if (syms.length === 0) return symbol.toUpperCase();
   const losses = loadLosses();
-  losses[upper] = Math.max(losses[upper] ?? 0, 3); // ensure >= threshold
+  for (const sym of syms) {
+    const prev = losses[sym]?.count ?? 0;
+    losses[sym] = { count: Math.max(prev, 3), blacklistedAt: losses[sym]?.blacklistedAt ?? new Date().toISOString() };
+  }
   saveLosses(losses);
-  return upper;
+  return syms.join(", ");
 }
 
 export function unblacklistToken(symbol) {
@@ -99,7 +142,7 @@ export function getOORCooldowns() { return loadOORCooldown(); }
 function applyCoordinationRules(sym) {
   const losses = loadLosses();
   const oor = loadOOR();
-  const lossCount = losses[sym] ?? 0;
+  const lossCount = losses[sym]?.count ?? 0;
   const oorCount = oor[sym] ?? 0;
 
   // Rule 4: loss >= 5 → permanent blacklist
@@ -158,8 +201,9 @@ export function isTokenBlacklisted(poolName) {
     }
     // Auto-blacklist: loss >= 3
     const losses = loadLosses();
-    if ((losses[sym] ?? 0) >= AUTO_BL_THRESHOLD) {
-      return { blacklisted: true, reason: `${sym} auto-blacklisted (${losses[sym]} losses)` };
+    const lc = losses[sym]?.count ?? 0;
+    if (lc >= AUTO_BL_THRESHOLD) {
+      return { blacklisted: true, reason: `${sym} auto-blacklisted (${lc} losses)` };
     }
     // OOR cooldown
     if (isOnOORCooldown(sym)) {
@@ -176,7 +220,7 @@ export function isTokenBlacklisted(poolName) {
 export function getBlacklist() {
   const losses = loadLosses();
   const perm = loadPermBL();
-  const autoBL = Object.entries(losses).filter(([, c]) => c >= AUTO_BL_THRESHOLD).map(([s]) => s);
+  const autoBL = Object.entries(losses).filter(([, v]) => (v?.count ?? 0) >= AUTO_BL_THRESHOLD).map(([s]) => s);
   const permBL = Object.keys(perm);
   return [...new Set([...STATIC_BLACKLIST, ...autoBL, ...permBL])];
 }

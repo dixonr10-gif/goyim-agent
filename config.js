@@ -32,6 +32,8 @@ export const config = {
   minOrganicScore: Number(process.env.MIN_ORGANIC_SCORE) || 65,
   maxTvlUsd: Number(process.env.MAX_POOL_TVL_USD) || 150_000,
   lpagentApiKey: process.env.LPAGENT_API_KEY || "",
+  trailingTpActivation: parseFloat(process.env.TRAILING_TP_ACTIVATION) || 6,
+  trailingTpTrail: parseFloat(process.env.TRAILING_TP_TRAIL) || 3,
   skipStablePairs: (process.env.SKIP_STABLE_PAIRS ?? "true") !== "false",
   minTokenAgeHours: parseFloat(process.env.MIN_TOKEN_AGE_HOURS) || 1,
   maxTokenAgeDays:  parseFloat(process.env.MAX_TOKEN_AGE_DAYS)  || 30,

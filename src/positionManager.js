@@ -427,10 +427,26 @@ export async function syncOnChainPositions() {
           ? { lower: Math.min(...binIds), upper: Math.max(...binIds) }
           : undefined;
 
+        // Resolve pool name from Meteora API so blacklist tracking works
+        let poolName = null;
+        try {
+          const pairRes = await fetch(`https://dlmm.datapi.meteora.ag/pair/${lbPairAddr}`, { signal: AbortSignal.timeout(8000) });
+          if (pairRes.ok) { const pd = await pairRes.json(); poolName = pd.name ?? null; }
+        } catch {}
+        if (!poolName) {
+          try {
+            const dxRes = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${lbPairAddr}`, { signal: AbortSignal.timeout(8000) });
+            const dxData = await dxRes.json();
+            const pair = dxData?.pair ?? dxData?.pairs?.[0];
+            if (pair) poolName = `${pair.baseToken?.symbol ?? "?"}-${pair.quoteToken?.symbol ?? "?"}`;
+          } catch {}
+        }
+
         const recoveryId = "recovered_" + Date.now() + "_" + Math.random().toString(36).slice(2, 5);
         openPositions.set(recoveryId, {
           id: recoveryId,
           pool: lbPairAddr,
+          poolName,
           strategy: "spot",
           openedAt: new Date().toISOString(),
           solDeployed: config.maxSolPerPosition,
@@ -439,7 +455,7 @@ export async function syncOnChainPositions() {
           recovered: true,
           recoveredAt: new Date().toISOString(),
         });
-        console.log(`[SYNC] ✅ Recovered: ${addr.slice(0, 8)}... (pool: ${lbPairAddr.slice(0, 8)}...)`);
+        console.log(`[SYNC] ✅ Recovered: ${addr.slice(0, 8)}... (pool: ${lbPairAddr.slice(0, 8)}...) name: ${poolName ?? "unknown"}`);
         recovered++;
       }
     }

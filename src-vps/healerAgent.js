@@ -11,6 +11,7 @@ import { notifyPositionClosed, notifyError, notifyMessage, isAgentPaused } from 
 import { autoSwapTokensToSOL } from "./autoSwap.js";
 import { recordTokenLoss, recordOORStrike } from "./blacklistManager.js";
 import { checkAndClaimFees } from "./feeCompounder.js";
+import { recordPoolClose } from "./poolMemory.js";
 
 let healerIteration = 0;
 
@@ -86,6 +87,7 @@ export async function runHealer() {
 
     if (openPos.length === 0) {
       console.log("  💊 No positions to monitor.");
+      recordLastRun("healer");
       return;
     }
 
@@ -125,10 +127,15 @@ export async function runHealer() {
             try { recordOORStrike(closedTrade.poolName ?? pos?.poolName); } catch {}
           }
           maybeEvolveThresholds(getFullStats().stats);
+          const holdMin = parseFloat(closedTrade.holdDurationHours ?? 0) * 60;
+          try { recordPoolClose(pos?.pool, parseFloat(closedTrade.pnlPercent ?? 0), closedTrade.outcome, holdMin); } catch {}
           analyzeClosedTrade(closedTrade, {}).catch(() => {});
         }
       } catch (closeErr) {
-        console.error(`❌ [Healer] Close failed for ${exit.positionId}:`, closeErr.message);
+        console.log(`  [Healer] Close failed for ${exit.positionId}: ${closeErr.message?.slice(0, 80)}`);
+        if (closeErr.message?.includes("not found") || closeErr.message?.includes("0 positions")) {
+          try { const { recordGhostStrike } = await import("./positionManager.js"); recordGhostStrike(exit.positionId, closeErr.message); } catch {}
+        }
       }
     }
 

@@ -228,43 +228,58 @@ function registerCommands() {
       const args = ctx.message.text.split(/\s+/).slice(1);
       const { getBlacklist, getTokenLosses, manualBlacklist } = await import("./blacklistManager.js");
 
-      // /blacklist add SYMBOL or /blacklist add CA
-      if (args[0]?.toLowerCase() === "add" && args[1]) {
-        let symbol = args[1].toUpperCase();
+      // /blacklist add SYMBOL, /blacklist SYMBOL, or /blacklist CA
+      const addArg = args[0]?.toLowerCase() === "add" ? args[1] : args[0];
+      if (addArg && !/^(show|list)$/i.test(addArg)) {
+        let symbol = addArg.toUpperCase();
         const CA_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-        if (CA_REGEX.test(args[1])) {
+        if (CA_REGEX.test(addArg)) {
           // Resolve CA to symbol via DexScreener
           try {
-            const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${args[1]}`, { signal: AbortSignal.timeout(8000) });
+            const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addArg}`, { signal: AbortSignal.timeout(8000) });
             const data = await res.json();
             const pair = data?.pairs?.[0];
-            symbol = (pair?.baseToken?.symbol ?? args[1].slice(0, 8)).toUpperCase();
+            symbol = (pair?.baseToken?.symbol ?? addArg.slice(0, 8)).toUpperCase();
             await ctx.reply(`🔍 CA resolved: ${symbol}`);
           } catch { await ctx.reply(`⚠️ Cannot resolve CA, using ${symbol}`); }
         }
-        manualBlacklist(symbol);
-        await ctx.reply(`✅ ${symbol} ditambahkan ke blacklist`);
+        const result = manualBlacklist(symbol);
+        await ctx.reply(`✅ ${result} ditambahkan ke blacklist`);
         return;
       }
 
       // /blacklist → show list
       const list = getBlacklist();
       const losses = getTokenLosses();
-      let msg = `<b>🚫 Blacklisted Tokens (${list.length})</b>\n\n`;
-      msg += `<code>${list.join(", ")}</code>\n\n`;
+      const { getTokenLossesWithDates } = await import("./blacklistManager.js");
+      const lossData = getTokenLossesWithDates();
+      const now = Date.now();
+      const WEEK = 7 * 86400000;
+
+      let msg = `<b>🚫 Blacklisted: ${list.length} total</b>\n\n`;
+
+      // Recent (7 days)
+      const recent = Object.entries(lossData)
+        .filter(([, v]) => (v?.count ?? 0) >= 3 && v?.blacklistedAt && (now - new Date(v.blacklistedAt).getTime()) < WEEK)
+        .map(([s]) => s);
+      if (recent.length > 0) {
+        msg += `<b>🆕 Recent (7d):</b> ${recent.join(", ")}\n`;
+      }
+
+      // Auto-blacklisted with loss count
       const autoEntries = Object.entries(losses).filter(([, c]) => c >= 3);
       if (autoEntries.length > 0) {
-        msg += `<b>🤖 Auto-blacklisted (3+ losses):</b>\n`;
-        for (const [sym, count] of autoEntries.sort((a, b) => b[1] - a[1])) {
-          msg += `  ${sym}: ${count} losses\n`;
-        }
+        msg += `<b>🤖 Auto (3L+):</b> ${autoEntries.sort((a, b) => b[1] - a[1]).map(([s, c]) => `${s}: ${c}L`).join(", ")}\n`;
       }
+
+      // Static count (don't list all JUP, WBTC etc)
+      const staticCount = list.length - autoEntries.length;
+      if (staticCount > 0) msg += `<b>🔒 Static:</b> ${staticCount} tokens (large-cap/env)\n`;
+
+      // Watch list
       const watchEntries = Object.entries(losses).filter(([, c]) => c > 0 && c < 3);
       if (watchEntries.length > 0) {
-        msg += `\n<b>👀 Watch list:</b>\n`;
-        for (const [sym, count] of watchEntries.sort((a, b) => b[1] - a[1])) {
-          msg += `  ${sym}: ${count} losses\n`;
-        }
+        msg += `\n<b>👀 Watch:</b> ${watchEntries.sort((a, b) => b[1] - a[1]).map(([s, c]) => `${s}: ${c}L`).join(", ")}\n`;
       }
       msg += `\n<i>Tambah: /blacklist add SYMBOL</i>`;
       await ctx.replyWithHTML(msg, mainMenu());
@@ -345,6 +360,20 @@ function registerCommands() {
       const emoji = pnlPercent > 0.5 ? "✅" : pnlPercent < -0.5 ? "❌" : "➡️";
       const outcome = pnlPercent > 0.5 ? "WIN" : pnlPercent < -0.5 ? "LOSS" : "BREAKEVEN";
       await ctx.reply(`${emoji} Trade recorded!\nPool: ${symbol}\nPnL: ${pnlPercent > 0 ? "+" : ""}${pnlPercent}%\nSOL: ${solDeployed}\nOutcome: ${outcome}`);
+    } catch (err) { await ctx.reply(`❌ ${err.message}`); }
+  });
+
+  bot.command("ghosts", async (ctx) => {
+    try {
+      const { getGhostBlacklist, clearGhostBlacklist } = await import("./positionManager.js");
+      const bl = getGhostBlacklist();
+      const entries = Object.entries(bl);
+      if (entries.length === 0) { await ctx.reply("✅ No ghost positions blacklisted"); return; }
+      let msg = `👻 Ghost Blacklist (${entries.length})\n\n`;
+      for (const [id, v] of entries) msg += `${id.slice(0, 16)}...\n  ${v.reason}\n  ${v.addedAt?.slice(0, 16)}\n\n`;
+      const args = ctx.message.text.split(/\s+/);
+      if (args[1] === "clear") { clearGhostBlacklist(); await ctx.reply("✅ Ghost blacklist cleared"); return; }
+      await ctx.reply(msg + "Tip: /ghosts clear to reset");
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }
   });
 
@@ -593,12 +622,19 @@ function registerCallbacks() {
   bot.action("btn_blacklist", async (ctx) => {
     await ctx.answerCbQuery();
     try {
-      const { getBlacklist, getTokenLosses } = await import("./blacklistManager.js");
+      const { getBlacklist, getTokenLosses, getTokenLossesWithDates } = await import("./blacklistManager.js");
       const list = getBlacklist();
       const losses = getTokenLosses();
-      let msg = `<b>🚫 Blacklisted (${list.length})</b>\n<code>${list.join(", ")}</code>\n`;
+      const lossData = getTokenLossesWithDates();
+      const WEEK = 7 * 86400000;
+      const now = Date.now();
+      let msg = `<b>🚫 Blacklisted: ${list.length} total</b>\n`;
+      const recent = Object.entries(lossData)
+        .filter(([, v]) => (v?.count ?? 0) >= 3 && v?.blacklistedAt && (now - new Date(v.blacklistedAt).getTime()) < WEEK)
+        .map(([s]) => s);
+      if (recent.length) msg += `<b>🆕 Recent:</b> ${recent.join(", ")}\n`;
       const auto = Object.entries(losses).filter(([, c]) => c >= 3);
-      if (auto.length) { msg += `\n<b>Auto:</b>\n`; for (const [s, c] of auto.sort((a, b) => b[1] - a[1])) msg += `  ${s}: ${c}L\n`; }
+      if (auto.length) msg += `<b>Auto:</b> ${auto.sort((a, b) => b[1] - a[1]).map(([s, c]) => `${s}:${c}L`).join(" ")}\n`;
       await ctx.editMessageText(msg, { parse_mode: "HTML", ...mainMenu() });
     } catch (e) { await ctx.editMessageText(`❌ ${e.message}`, { ...mainMenu() }); }
   });
@@ -874,6 +910,15 @@ export async function notifyPositionOpened(position, decision) {
   }
 
   msg += `\n💬 ${esc(decision.rationale?.slice(0, 150))}`;
+  msg += `\n\n🎯 Trailing TP: aktif di +${config.trailingTpActivation}%, trail -${config.trailingTpTrail}%`;
+
+  try {
+    const { getPoolMemory } = await import("./poolMemory.js");
+    const pm = getPoolMemory(position.pool);
+    if (pm && pm.deployCount > 0) {
+      msg += `\n📚 History: ${pm.deployCount}x deploy | WR ${pm.winRate ?? "?"}% | avg ${pm.avgPnlPct >= 0 ? "+" : ""}${pm.avgPnlPct}%`;
+    }
+  } catch {}
 
   await sendNotification(msg);
 }
@@ -934,9 +979,17 @@ function buildStatusMessage() {
   const d = sessionStats.lastDecision;
   let msg = `<b>🤖 Goyim Agent</b>\n${"─".repeat(25)}\n`;
   msg += `Status: <b>${status}</b> | Uptime: <b>${getUptime()}</b>\n`;
-  msg += `Posisi aktif: <b>${positions.length}/3</b>\n`;
-  if (d) msg += `\nLast move: <b>${d.action?.toUpperCase()}</b> (${d.confidence}%) — ${formatTime(d.at)}`;
-  if (sessionStats.lastError) msg += `\n\n⚠️ <code>${sessionStats.lastError.msg?.slice(0,80)}</code>`;
+  msg += `Posisi aktif: <b>${positions.length}/${config.maxOpenPositions}</b>\n`;
+  // Daily loss info
+  try {
+    const { trades } = getFullStats();
+    const todayStart = new Date(); todayStart.setUTCHours(0, 0, 0, 0);
+    const todayLoss = (trades ?? []).filter(t => t.closedAt && new Date(t.closedAt) >= todayStart && t.outcome === "loss")
+      .reduce((s, t) => s + Math.abs((t.pnlPercent ?? 0) / 100 * (t.solDeployed ?? 0)), 0);
+    msg += `📉 Daily Loss: <b>${todayLoss.toFixed(2)}/5 SOL</b>${todayLoss >= 5 ? " 🛑 PAUSED" : ""}\n`;
+  } catch {}
+  if (d) msg += `\nLast move: <b>${esc(d.action?.toUpperCase())}</b> (${d.confidence}%) — ${formatTime(d.at)}`;
+  if (sessionStats.lastError) msg += `\n\n⚠️ <code>${esc(sessionStats.lastError.msg?.slice(0,80))}</code>`;
   return msg;
 }
 
@@ -1001,6 +1054,12 @@ async function buildPositionsMessage(positions) {
     msg += `Pool: <a href="${meteoraUrl}">${poolShort}...</a>\n`;
     msg += `Strategy: <b>${pos.strategy?.toUpperCase()}</b> | SOL: <b>${pos.solDeployed}</b>\n`;
     msg += `${pnlEmoji} PnL: <b>${pnlStr}</b> | ⏱️ ${holdH}h\n`;
+    if (pos.trailingActive) {
+      const hwm = pos.highWaterMark ?? 0;
+      const trail = config.trailingTpTrail ?? 3;
+      const lock = (hwm - trail).toFixed(2);
+      msg += `🎯 Trailing: HWM <b>+${hwm.toFixed(2)}%</b> | Lock <b>+${lock}%</b>\n`;
+    }
     const links = [];
     if (solscanUrl) links.push(`🔍 <a href="${solscanUrl}">Solscan</a>`);
     links.push(`📊 <a href="${dexUrl}">DexScreener</a>`);
@@ -1029,9 +1088,11 @@ function buildWinRateMessage() {
   const s = data?.stats ?? {};
   const ss = data?.strategyStats ?? {};
   const hitRate = parseFloat(s.hitRate ?? 0);
+  const decided = (s.winners ?? 0) + (s.losers ?? 0);
   const emoji = hitRate >= 70 ? "🔥" : hitRate >= 50 ? "✅" : "⚠️";
   let msg = `<b>${emoji} Win Rate</b>\n${"─".repeat(25)}\n\n`;
-  msg += `Overall: <b>${hitRate}%</b> (${s.winners ?? 0}/${s.totalTrades ?? 0})\n\n`;
+  msg += `Overall: <b>${hitRate}%</b> (${s.winners ?? 0}W / ${s.losers ?? 0}L)\n`;
+  msg += `Total: ${s.totalTrades ?? 0} trades | BE: ${s.breakeven ?? 0} | Unk: ${s.unknown ?? 0}\n\n`;
   msg += `<b>Per Strategy:</b>\n`;
   ["spot", "curve", "bid-ask"].forEach(strat => {
     const st = ss[strat];

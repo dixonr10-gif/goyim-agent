@@ -20,6 +20,42 @@ const require = createRequire(import.meta.url);
 import fs from "fs";
 import path from "path";
 const POSITIONS_FILE = path.resolve("data/open_positions.json");
+const GHOST_BL_FILE = path.resolve("data/ghost_blacklist.json");
+
+const _ghostStrikes = {}; // { posId: { count, lastStrike } }
+
+function loadGhostBlacklist() { try { return JSON.parse(fs.readFileSync(GHOST_BL_FILE, "utf-8")); } catch { return {}; } }
+function saveGhostBlacklist(d) { try { fs.mkdirSync(path.dirname(GHOST_BL_FILE), { recursive: true }); fs.writeFileSync(GHOST_BL_FILE, JSON.stringify(d, null, 2)); } catch {} }
+
+export function recordGhostStrike(positionId, reason) {
+  const now = Date.now();
+  const strike = _ghostStrikes[positionId] || { count: 0, lastStrike: 0 };
+  if (now - strike.lastStrike < 300_000) return false; // 5 min cooldown between strikes
+  strike.count++;
+  strike.lastStrike = now;
+  _ghostStrikes[positionId] = strike;
+  console.log(`  [Ghost] Strike ${strike.count}/4 for ${positionId?.slice(0, 16)}`);
+
+  if (strike.count >= 4) {
+    const bl = loadGhostBlacklist();
+    bl[positionId] = { reason, addedAt: new Date().toISOString(), strikes: strike.count };
+    saveGhostBlacklist(bl);
+    openPositions.delete(positionId);
+    savePositions(openPositions);
+    delete _ghostStrikes[positionId];
+    console.log(`  [Ghost] ${positionId?.slice(0, 16)} BLACKLISTED after 4 strikes`);
+    return true; // blacklisted
+  }
+  return false;
+}
+
+export function isGhostBlacklisted(positionAddress) {
+  const bl = loadGhostBlacklist();
+  return Object.values(bl).some(v => v.positionAddress === positionAddress) || !!bl[positionAddress];
+}
+
+export function getGhostBlacklist() { return loadGhostBlacklist(); }
+export function clearGhostBlacklist() { saveGhostBlacklist({}); }
 
 let _cachedSolPrice = 80;
 let _solPriceCacheTime = 0;
@@ -177,7 +213,7 @@ export async function openPosition(decision) {
     console.log(`📋 Opening ${strategy} on ${targetPool}`);
 
     const activeBin = await dlmmPool.getActiveBin();
-    const binCount = binRange?.upper ?? 50;
+    const binCount = (typeof binRange === "number" ? binRange : binRange?.upper) || 50;
     console.log(`  [Bins] using ${binCount} bins for ${strategy ?? "spot"} range`);
     const lowerBinId = solIsY ? activeBin.binId - binCount : activeBin.binId + 1;
     const upperBinId = solIsY ? activeBin.binId - 1 : activeBin.binId + binCount;
@@ -449,6 +485,10 @@ export async function syncOnChainPositions() {
           p => p.positionAddress === posAddress
         );
         if (!existing) {
+          // Skip ghost-blacklisted positions
+          const gbl = loadGhostBlacklist();
+          if (gbl[posAddress]) { console.log(`  [Sync] Skipping blacklisted ghost: ${posAddress.slice(0,8)}`); continue; }
+
           const binData = pos.positionData?.positionBinData ?? [];
           const binIds = binData.map(b => b.binId).filter(Number.isFinite);
           const binRange = binIds.length > 0
@@ -456,9 +496,24 @@ export async function syncOnChainPositions() {
             : undefined;
           // Fetch current SOL price for synced positions
           let solPriceAtEntry = await fetchSolPriceUsd();
+          // Resolve pool name from Meteora API so blacklist tracking works
+          let poolName = null;
+          try {
+            const pairRes = await fetch(`https://dlmm.datapi.meteora.ag/pair/${lbPair}`, { signal: AbortSignal.timeout(8000) });
+            if (pairRes.ok) { const pd = await pairRes.json(); poolName = pd.name ?? null; }
+          } catch {}
+          if (!poolName) {
+            try {
+              const dxRes = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${lbPair}`, { signal: AbortSignal.timeout(8000) });
+              const dxData = await dxRes.json();
+              const pair = dxData?.pair ?? dxData?.pairs?.[0];
+              if (pair) poolName = `${pair.baseToken?.symbol ?? "?"}-${pair.quoteToken?.symbol ?? "?"}`;
+            } catch {}
+          }
           const syncedPos = {
             id: posAddress,
             pool: lbPair,
+            poolName,
             positionAddress: posAddress,
             strategy: "spot",
             solDeployed: config.maxSolPerPosition,
@@ -468,11 +523,11 @@ export async function syncOnChainPositions() {
             syncedFromChain: true,
           };
           openPositions.set(posAddress, syncedPos);
-          console.log(`📡 Found on-chain position: ${posAddress.slice(0,8)}... pool: ${lbPair.slice(0,8)}...`);
+          console.log(`📡 Found on-chain position: ${posAddress.slice(0,8)}... pool: ${lbPair.slice(0,8)}... name: ${poolName ?? "unknown"}`);
           // Record to trade memory so close can find it
           try {
             const { recordTradeOpen } = await import("./tradeMemory.js");
-            recordTradeOpen({ positionId: posAddress, pool: lbPair, poolName: null, strategy: "spot", solDeployed: config.maxSolPerPosition, decision: { confidence: null, rationale: "synced from chain" } });
+            recordTradeOpen({ positionId: posAddress, pool: lbPair, poolName, strategy: "spot", solDeployed: config.maxSolPerPosition, decision: { confidence: null, rationale: "synced from chain" } });
           } catch {}
         }
       }
@@ -526,7 +581,8 @@ export async function getPositionValue(position) {
     let posData = userPositions.find(p => p.publicKey.toString() === position.positionAddress);
 
     if (!posData) {
-      console.log(`[PNL] ${position.positionAddress?.slice(0,8)} not in pool (${userPositions.length} positions) — likely closed externally`);
+      console.log(`[PNL] ${position.positionAddress?.slice(0,8)} not in pool (${userPositions.length} positions)`);
+      recordGhostStrike(position.id, `not in pool (${userPositions.length} positions)`);
       position._posValueUsd = 0;
       position._solPriceNow = 0;
       position._positionGone = true;

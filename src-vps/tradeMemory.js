@@ -121,16 +121,31 @@ export function recordTradeClose({ positionId, solReturned, preClosePnlPct = nul
     console.log(`  [TradeMemory] created missing record for ${positionId}`);
   }
 
+  // Update poolName if it was missing at open time (synced positions)
+  if (poolName && (!trade.poolName || trade.poolName === "unknown")) {
+    trade.poolName = poolName;
+  }
+
   let pnlSol, pnlPercent, pnlSource;
   if (typeof preClosePnlPct === "number") {
     pnlPercent = preClosePnlPct;
     pnlSol = (pnlPercent / 100) * (trade.solDeployed || solDeployed || 0);
     pnlSource = "usd-precise";
   } else {
-    pnlSol = 0;
-    pnlPercent = 0;
-    pnlSource = "unavailable";
-    console.log(`  [PnL] unavailable at close — recording as 0%`);
+    // Fallback: SOL-based PnL from solReturned vs solDeployed
+    const dep = trade.solDeployed || solDeployed || 0;
+    const ret = typeof solReturned === "number" ? solReturned : 0;
+    if (dep > 0 && ret > 0) {
+      pnlPercent = ((ret - dep) / dep) * 100;
+      pnlSol = ret - dep;
+      pnlSource = "sol-based";
+      console.log(`  [PnL] SOL-based fallback: dep=${dep} ret=${ret.toFixed(4)} → ${pnlPercent >= 0 ? "+" : ""}${pnlPercent.toFixed(2)}%`);
+    } else {
+      pnlSol = 0;
+      pnlPercent = 0;
+      pnlSource = "unknown";
+      console.log(`  [PnL] unavailable — no valid return data, recording as unknown`);
+    }
   }
 
   const holdDurationHours =
@@ -142,7 +157,8 @@ export function recordTradeClose({ positionId, solReturned, preClosePnlPct = nul
   trade.pnlPercent = pnlPercent;
   trade.pnlSource = pnlSource;
   trade.holdDurationHours = holdDurationHours.toFixed(1);
-  trade.outcome = pnlPercent > 1 ? "win" : pnlPercent < -1 ? "loss" : "breakeven";
+  trade.outcome = pnlSource === "unknown" ? "unknown"
+    : pnlPercent > 0.1 ? "win" : pnlPercent < -0.1 ? "loss" : "breakeven";
 
   // Rekalkulasi stats
   recalculateStats(memory);
@@ -162,41 +178,50 @@ function recalculateStats(memory) {
 
   if (closed.length === 0) return;
 
-  // Re-derive outcome from actual pnlPercent (fixes stale outcomes from broken PnL era)
+  // Re-derive outcome from actual pnlPercent (±0.1% breakeven band)
   for (const t of closed) {
+    if (t.pnlSource === "unknown") { t.outcome = "unknown"; continue; }
     const pnl = parseFloat(t.pnlPercent ?? 0);
-    t.outcome = pnl > 1 ? "win" : pnl < -1 ? "loss" : "breakeven";
+    t.outcome = pnl > 0.1 ? "win" : pnl < -0.1 ? "loss" : "breakeven";
   }
 
-  // Overall stats
+  // Overall stats — hitRate = wins / (wins + losses), exclude breakeven & unknown
   const winners = closed.filter((t) => t.outcome === "win").length;
   const losers = closed.filter((t) => t.outcome === "loss").length;
   const breakeven = closed.filter((t) => t.outcome === "breakeven").length;
+  const unknown = closed.filter((t) => t.outcome === "unknown").length;
   const totalPnl = closed.reduce((a, t) => a + (t.pnlSol ?? 0), 0);
-  const avgPnl = closed.reduce((a, t) => a + (t.pnlPercent ?? 0), 0) / closed.length;
+  const knownTrades = closed.filter((t) => t.outcome !== "unknown");
+  const avgPnl = knownTrades.length > 0
+    ? knownTrades.reduce((a, t) => a + (t.pnlPercent ?? 0), 0) / knownTrades.length : 0;
+  const decided = winners + losers;
 
   memory.stats = {
     totalTrades: closed.length,
     winners,
     losers,
     breakeven,
-    hitRate: ((winners / closed.length) * 100).toFixed(1),
+    unknown,
+    hitRate: decided > 0 ? ((winners / decided) * 100).toFixed(1) : "0.0",
     avgPnlPercent: avgPnl.toFixed(2),
     totalPnlSol: totalPnl.toFixed(4),
   };
 
-  // Strategy stats
+  // Strategy stats — same hitRate formula: wins / (wins + losses)
   ["spot", "curve", "bid-ask"].forEach((strat) => {
     const stratTrades = closed.filter((t) => t.strategy === strat);
     if (stratTrades.length === 0) return;
     const stratWinners = stratTrades.filter((t) => t.outcome === "win").length;
-    const stratAvgPnl =
-      stratTrades.reduce((a, t) => a + (t.pnlPercent ?? 0), 0) / stratTrades.length;
+    const stratLosers = stratTrades.filter((t) => t.outcome === "loss").length;
+    const stratDecided = stratWinners + stratLosers;
+    const stratKnown = stratTrades.filter((t) => t.outcome !== "unknown");
+    const stratAvgPnl = stratKnown.length > 0
+      ? stratKnown.reduce((a, t) => a + (t.pnlPercent ?? 0), 0) / stratKnown.length : 0;
 
     memory.strategyStats[strat] = {
       trades: stratTrades.length,
       winners: stratWinners,
-      hitRate: ((stratWinners / stratTrades.length) * 100).toFixed(1),
+      hitRate: stratDecided > 0 ? ((stratWinners / stratDecided) * 100).toFixed(1) : "0.0",
       avgPnl: stratAvgPnl.toFixed(2),
     };
   });
@@ -210,11 +235,15 @@ function recalculateStats(memory) {
 
   Object.entries(poolGroups).forEach(([pool, trades]) => {
     const poolWinners = trades.filter((t) => t.outcome === "win").length;
-    const poolAvgPnl = trades.reduce((a, t) => a + (t.pnlPercent ?? 0), 0) / trades.length;
+    const poolLosers = trades.filter((t) => t.outcome === "loss").length;
+    const poolDecided = poolWinners + poolLosers;
+    const poolKnown = trades.filter((t) => t.outcome !== "unknown");
+    const poolAvgPnl = poolKnown.length > 0
+      ? poolKnown.reduce((a, t) => a + (t.pnlPercent ?? 0), 0) / poolKnown.length : 0;
     memory.poolStats[pool] = {
       name: trades[0].poolName,
       trades: trades.length,
-      hitRate: ((poolWinners / trades.length) * 100).toFixed(1),
+      hitRate: poolDecided > 0 ? ((poolWinners / poolDecided) * 100).toFixed(1) : "0.0",
       avgPnl: poolAvgPnl.toFixed(2),
     };
   });
@@ -250,7 +279,7 @@ export function getMemoryContextForLLM() {
     `=== AGENT TRADE HISTORY ===`,
     `Total trades: ${stats.totalTrades} | Hit rate: ${stats.hitRate}%`,
     `Total P&L: ${stats.totalPnlSol} SOL | Avg per trade: ${stats.avgPnlPercent}%`,
-    `Winners: ${stats.winners} | Losers: ${stats.losers} | Breakeven: ${stats.breakeven}`,
+    `Winners: ${stats.winners} | Losers: ${stats.losers} | Breakeven: ${stats.breakeven} | Unknown: ${stats.unknown ?? 0}`,
     ``,
     `=== STRATEGY PERFORMANCE ===`,
     formatStrategyStats(memory.strategyStats),

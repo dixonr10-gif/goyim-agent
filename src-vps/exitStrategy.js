@@ -248,35 +248,48 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
         try { const { updatePositionField: ufReset } = await import("./positionManager.js"); ufReset(position.id, "_prevPnlPercent", pnlPercent); } catch {}
       }
 
-      // ── Take profit (fixed) ────────────────────────────────────────────────
-      // NOTE: fixed TP is now only a fallback; trailing TP below handles the smart exit
-      // If trailing is already active, skip the fixed TP — let trailing manage it
-      if (pnlPercent >= EXIT_RULES.takeProfitPercent && !position.trailingHigh) {
-        // Activate trailing instead of closing immediately
-        try {
-          const { updatePositionField } = await import("./positionManager.js");
-          updatePositionField(position.id, "trailingHigh", pnlPercent);
-          position.trailingHigh = pnlPercent;
-          console.log(`  [TrailingTP] ACTIVATED at ${pnlPercent.toFixed(1)}% — watching for pullback`);
-        } catch {}
-      }
-
-      // ── Trailing take profit ──────────────────────────────────────────────
+      // ── Trailing Take Profit ──────────────────────────────────────────────
+      // Activates at TRAILING_TP_ACTIVATION%, then tracks highWaterMark.
+      // Closes when PnL drops TRAILING_TP_TRAIL% from HWM.
       try {
-        if (position.trailingHigh != null) {
-          const { updatePositionField } = await import("./positionManager.js");
-          if (pnlPercent > position.trailingHigh) {
-            updatePositionField(position.id, "trailingHigh", pnlPercent);
-            position.trailingHigh = pnlPercent;
-            console.log(`  [TrailingTP] new high=${pnlPercent.toFixed(1)}% → watching`);
+        const trailActivation = config.trailingTpActivation ?? 6;
+        const trailDrop = config.trailingTpTrail ?? 3;
+        const { updatePositionField: ufTrail } = await import("./positionManager.js");
+
+        // Activate trailing when PnL first reaches activation threshold
+        if (!position.trailingActive && pnlPercent >= trailActivation) {
+          ufTrail(position.id, "trailingActive", true);
+          ufTrail(position.id, "highWaterMark", pnlPercent);
+          ufTrail(position.id, "trailingActivatedAt", new Date().toISOString());
+          position.trailingActive = true;
+          position.highWaterMark = pnlPercent;
+          console.log(`  🎯 [TrailingTP] ACTIVATED at +${pnlPercent.toFixed(2)}% (trail=${trailDrop}%)`);
+          try {
+            const { notifyMessage: nMsg } = await import("./telegramBot.js");
+            const lock = (pnlPercent - trailDrop).toFixed(2);
+            await nMsg(`🎯 <b>Trailing TP aktif!</b>\n\nPool: ${position.poolName ?? position.id}\nPnL: <b>+${pnlPercent.toFixed(2)}%</b>\nHWM: +${pnlPercent.toFixed(2)}%\nLock: +${lock}%`);
+          } catch {}
+        }
+
+        if (position.trailingActive) {
+          // Update high water mark
+          if (pnlPercent > (position.highWaterMark ?? 0)) {
+            ufTrail(position.id, "highWaterMark", pnlPercent);
+            position.highWaterMark = pnlPercent;
+            console.log(`  🎯 [TrailingTP] new HWM=+${pnlPercent.toFixed(2)}%`);
           }
-          const dropFromHigh = position.trailingHigh - pnlPercent;
-          if (position.trailingHigh >= EXIT_RULES.takeProfitPercent && dropFromHigh >= 4) {
-            console.log(`  [TrailingTP] TRIGGERED: high=${position.trailingHigh.toFixed(1)}% dropped to ${pnlPercent.toFixed(1)}%`);
-            toClose.push({ positionId: position.id, reason: `trailing TP: high=${position.trailingHigh.toFixed(1)}% dropped to ${pnlPercent.toFixed(1)}%`, pnlPercent, currentValue });
+
+          const hwm = position.highWaterMark ?? 0;
+          const dropFromHigh = hwm - pnlPercent;
+          const lockPct = (hwm - trailDrop).toFixed(2);
+
+          // Trigger close if PnL dropped trail amount from HWM
+          if (dropFromHigh >= trailDrop) {
+            console.log(`  🏁 [TrailingTP] TRIGGERED: HWM=+${hwm.toFixed(2)}% exit=+${pnlPercent.toFixed(2)}% lock=+${lockPct}%`);
+            toClose.push({ positionId: position.id, reason: `trailing TP: HWM +${hwm.toFixed(1)}% → +${pnlPercent.toFixed(1)}% (drop ${dropFromHigh.toFixed(1)}%)`, pnlPercent, currentValue });
             continue;
           } else {
-            console.log(`  [TrailingTP] high=${position.trailingHigh.toFixed(1)}% current=${pnlPercent.toFixed(1)}% drop=${dropFromHigh.toFixed(1)}% → watching`);
+            console.log(`  🎯 [TrailingTP] HWM=+${hwm.toFixed(2)}% now=+${pnlPercent.toFixed(2)}% lock=+${lockPct}% → holding`);
           }
         }
       } catch (e) { console.warn(`  ⚠️ TrailingTP error:`, e.message); }
