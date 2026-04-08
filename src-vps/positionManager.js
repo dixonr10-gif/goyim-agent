@@ -313,13 +313,23 @@ export async function closePosition(positionId) {
 
     if (!pos.positionAddress) throw new Error(`No positionAddress for ${positionId} — cannot close`);
 
+    // Helper: set cooldown for closed token
+    const _setCooldownForPos = async (p) => {
+      try {
+        const { extractTokenSymbol, setCooldown } = await import("./cooldownManager.js");
+        const symbol = extractTokenSymbol(p.poolName);
+        if (symbol) setCooldown(symbol);
+      } catch {}
+    };
+
     // Check if position already closed on-chain before attempting TX
     const preCheck = await connection.getAccountInfo(new PublicKey(pos.positionAddress));
     if (preCheck === null) {
       console.log(`⚠️ Position ${pos.positionAddress.slice(0,8)} already gone on-chain — cleaning up local state`);
+      await _setCooldownForPos(pos);
       openPositions.delete(positionId);
       savePositions(openPositions);
-      return true;
+      return { success: true, txSignatures: [], solReceived: pos.solDeployed, externalClose: true };
     }
 
     const dlmmPool = await DLMMClass.create(connection, new PublicKey(pos.pool));
@@ -328,6 +338,7 @@ export async function closePosition(positionId) {
     const positionData = userPositions.find(p => p.publicKey.toString() === pos.positionAddress);
     if (!positionData) {
       console.log(`⚠️ Position ${pos.positionAddress.slice(0,8)} not in SDK (${userPositions.length} in pool) — already closed externally, cleaning up`);
+      await _setCooldownForPos(pos);
       openPositions.delete(positionId);
       savePositions(openPositions);
       return { success: true, txSignatures: [], solReceived: pos.solDeployed, externalClose: true };
@@ -780,17 +791,30 @@ export function updatePositionField(positionId, field, value) {
 export async function rebalancePosition(positionId) {
   const pos = openPositions.get(positionId);
   if (!pos) throw new Error(`Position ${positionId} not found for rebalance`);
+  // Save pos data before close deletes it
+  const posData = { ...pos };
   console.log(`🔄 Rebalancing ${positionId} (pool: ${pos.pool?.slice(0, 8)}...)...`);
   const closeResult = await closePosition(positionId);
   // Use actual SOL received from close as the new deposit amount
-  const solReceived = closeResult?.solReceived ?? pos.solDeployed ?? config.maxSolPerPosition;
+  const solReceived = closeResult?.solReceived ?? posData.solDeployed ?? config.maxSolPerPosition;
   console.log(`  [Rebalance] solReceived=${solReceived.toFixed?.(4) ?? solReceived} → re-opening with this amount`);
+
+  // Record the closed trade + notify Telegram (was missing — caused ghost closes)
+  try {
+    const { recordTradeClose } = await import("./tradeMemory.js");
+    recordTradeClose({ positionId, solReturned: solReceived, poolName: posData.poolName, solDeployed: posData.solDeployed });
+  } catch (e) { console.warn(`  [Rebalance] recordTradeClose failed: ${e.message}`); }
+  try {
+    const { notifyPositionClosed } = await import("./telegramBot.js");
+    await notifyPositionClosed(positionId, "rebalance: out of range (re-opening)", closeResult?.txSignatures ?? []);
+  } catch (e) { console.warn(`  [Rebalance] notifyPositionClosed failed: ${e.message}`); }
+
   const origMax = config.maxSolPerPosition;
   config.maxSolPerPosition = solReceived;
   try {
     const newPosId = await openPosition({
-      targetPool: pos.pool,
-      strategy: pos.strategy ?? "spot",
+      targetPool: posData.pool,
+      strategy: posData.strategy ?? "spot",
       binRange: { upper: 50 },
       confidence: 70,
       rationale: "auto-rebalance after OOR",
