@@ -235,6 +235,43 @@ export async function scanPools() {
   }
 }
 
+// Meteora fee_tvl_ratio trending — pools with highest fee efficiency (hot pools)
+// Sorted by fee_tvl_ratio desc = most fees relative to TVL = trending
+export async function fetchDexScreenerMeteora() {
+  const candidates = [];
+  try {
+    for (let page = 1; page <= 4; page++) {
+      const res = await fetch(`${METEORA_API}/pools?page=${page}&limit=50&sort_key=fee_tvl_ratio&order_by=desc`, {
+        signal: AbortSignal.timeout(20000),
+        headers: { "Accept": "application/json" }
+      });
+      if (!res.ok) break;
+      const text = await res.text();
+      if (!text || text.trim() === "") break;
+      const pools = JSON.parse(text)?.data ?? [];
+      if (pools.length === 0) break;
+
+      for (const p of pools) {
+        const vol = p.volume?.["24h"] ?? 0;
+        const tvl = p.tvl ?? 0;
+        if (vol < 50_000 || tvl < 5_000) continue;
+        if (isStablecoinOnly(p.name)) continue;
+        const ageMin = getPoolAgeMinutes(p);
+        if (ageMin !== null && ageMin < 5) continue;
+        if (ageMin !== null && ageMin > 10080) continue;
+        candidates.push({
+          ...p,
+          dexMeteoraTrending: true,
+        });
+      }
+    }
+    console.log(`  📈 Meteora fee_tvl_ratio: ${candidates.length} candidates`);
+  } catch (err) {
+    console.warn(`  ⚠️ Meteora fee_tvl_ratio error: ${err.message}`);
+  }
+  return candidates;
+}
+
 export function formatPoolsForLLM(pools) {
   return pools.map((p) => ({
     address: p.address,

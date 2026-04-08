@@ -2,7 +2,7 @@
 // Hunter Agent — scans pools, makes LLM entry decisions every 30 min
 
 import { config } from "../config.js";
-import { scanPools, formatPoolsForLLM } from "./poolScanner.js";
+import { scanPools, formatPoolsForLLM, fetchDexScreenerMeteora } from "./poolScanner.js";
 import { checkBundler } from "./bundlerChecker.js";
 import { analyzePool } from "./marketAnalyzer.js";
 import { agentDecide } from "./llmAgent.js";
@@ -86,8 +86,8 @@ async function fetchDexScreenerTrending() {
     if (tokens.length === 0) return [];
     console.log(`  [DexTrending] Found ${tokens.length} Solana trending tokens`);
 
-    // Batch lookup: find Meteora DLMM pools for each (max 25 to widen candidate set)
-    for (const mint of tokens.slice(0, 25)) {
+    // Batch lookup: find Meteora DLMM pools for each (max 30 to widen candidate set)
+    for (const mint of tokens.slice(0, 30)) {
       try {
         const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(8000) });
         const data = await res.json();
@@ -190,8 +190,22 @@ export async function runHunter() {
         }
       }
     } catch (e) { console.warn(`[DexTrending] Error: ${e.message}`); }
-    const meteoraCount = rawPools.length - trendingCount;
-    console.log(`[Hunter] candidates: ${meteoraCount} from Meteora + ${trendingCount} from DexTrending = ${rawPools.length} total`);
+
+    // Meteora fee_tvl_ratio trending: third candidate source
+    let feeRatioCount = 0;
+    try {
+      const feeRatioPools = await fetchDexScreenerMeteora();
+      const existingAddrs2 = new Set(rawPools.map(p => p.address));
+      for (const fp of feeRatioPools) {
+        if (!existingAddrs2.has(fp.address)) {
+          rawPools.push(fp);
+          feeRatioCount++;
+        }
+      }
+    } catch (e) { console.warn(`[FeeTVL] Error: ${e.message}`); }
+
+    const meteoraCount = rawPools.length - trendingCount - feeRatioCount;
+    console.log(`[Hunter] candidates: ${meteoraCount} from Meteora + ${trendingCount} from DexTrending + ${feeRatioCount} from fee_tvl_ratio = ${rawPools.length} total`);
 
     if (rawPools.length === 0) { console.log("😴 No qualifying pools."); return; }
 
@@ -481,9 +495,9 @@ export async function runHunter() {
 
               if (totalScore > 85) dynamicSol = 5;
               else if (totalScore >= 75) dynamicSol = 4;
-              else if (totalScore >= 65) dynamicSol = 3;
-              else if (totalScore >= 50) dynamicSol = 2;
-              else if (totalScore >= 40) dynamicSol = 1;
+              else if (totalScore >= 65) dynamicSol = 4;
+              else if (totalScore >= 50) dynamicSol = 3;
+              else if (totalScore >= 40) dynamicSol = 2;
               else { dynamicSol = 0; momentumSkip = true; console.log(`  [PositionSize] score=${totalScore} < 40 → SKIP`); }
 
               dynamicSol = Math.min(dynamicSol, config.maxSolPerPosition);
