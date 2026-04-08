@@ -56,22 +56,37 @@ export async function getStats(period = "allTime") {
   const ov = await getOverview();
   const key = period === "7d" ? "7D" : "ALL";
 
+  const pnlUsd  = ov.total_pnl?.[key]        ?? 0;
+  const feesUsd = ov.total_fee?.[key]        ?? 0;
+  const pnlSol  = ov.total_pnl_native?.[key] ?? 0;
+  const feesSol = ov.total_fee_native?.[key] ?? 0;
+  const trades  = ov.closed_lp?.[key]        ?? 0;
+  const wr      = ov.win_rate?.[key]         ?? 0;
+  const wins    = Math.round(trades * wr);
+  const losses  = trades - wins;
+
   return {
-    totalPnlUsd:   ov.total_pnl?.[key]         ?? 0,
-    totalPnlSol:   ov.total_pnl_native?.[key]  ?? 0,
-    totalFeesUsd:  ov.total_fee?.[key]          ?? 0,
-    totalFeesSol:  ov.total_fee_native?.[key]   ?? 0,
-    winRate:       ((ov.win_rate?.[key] ?? 0) * 100).toFixed(1),
-    winRateSol:    ((ov.win_rate_native?.[key] ?? 0) * 100).toFixed(1),
-    totalTrades:   ov.closed_lp?.[key]          ?? 0,
-    openPositions: ov.opening_lp                ?? 0,
-    avgHoldHours:  ov.avg_age_hour              ?? 0,
-    totalPools:    ov.total_pool                ?? 0,
-    totalInflow:   ov.total_inflow              ?? 0,
-    totalOutflow:  ov.total_outflow             ?? 0,
-    expectedValue: ov.expected_value?.[key]     ?? 0,
-    firstActivity: ov.first_activity,
-    lastActivity:  ov.last_activity,
+    totalPnlUsd:    pnlUsd,
+    totalPnlSol:    pnlSol,
+    totalFeesUsd:   feesUsd,
+    totalFeesSol:   feesSol,
+    totalProfitUsd: pnlUsd + feesUsd,       // Fabriq-matching: PnL + fees
+    totalProfitSol: pnlSol + feesSol,
+    ilUsd:          pnlUsd,                  // IL = PnL without fees
+    ilSol:          pnlSol,
+    winRate:        (wr * 100).toFixed(1),
+    winRateSol:     ((ov.win_rate_native?.[key] ?? 0) * 100).toFixed(1),
+    totalTrades:    trades,
+    wins,
+    losses,
+    openPositions:  ov.opening_lp            ?? 0,
+    avgHoldHours:   ov.avg_age_hour          ?? 0,
+    totalPools:     ov.total_pool            ?? 0,
+    totalInflow:    ov.total_inflow          ?? 0,
+    totalOutflow:   ov.total_outflow         ?? 0,
+    expectedValue:  ov.expected_value?.[key] ?? 0,
+    firstActivity:  ov.first_activity,
+    lastActivity:   ov.last_activity,
     source: "lpagent",
   };
 }

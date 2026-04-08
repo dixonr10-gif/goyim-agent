@@ -115,24 +115,36 @@ async function getCardDataLPAgent(period) {
   const days = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
   const dateStr = stats.firstActivity?.slice(0, 10) ?? startDate.toISOString().slice(0, 10);
 
+  // Profit factor: avgWin / avgLoss
+  let profitFactor = "—";
+  if (stats.wins > 0 && stats.losses > 0 && stats.totalFeesUsd > 0) {
+    // Approximate: total fees go to wins, IL spread across losses
+    const avgWin = stats.totalFeesUsd / stats.wins;
+    const totalLoss = Math.abs(stats.ilUsd) + stats.totalFeesUsd; // gross loss
+    const avgLoss = totalLoss / stats.losses;
+    if (avgLoss > 0) profitFactor = (avgWin / avgLoss).toFixed(2);
+  }
+
   return {
     period, dateRange: `${dateStr} — ${now.toISOString().slice(0, 10)}`,
     days, openPositions: openPos,
     summary: {
-      totalPnlUsd: stats.totalPnlUsd,
+      totalPnlUsd: stats.totalProfitUsd,   // Headline: PnL + fees (Fabriq-matching)
       totalPositions: stats.totalTrades,
-      wins: Math.round(stats.totalTrades * parseFloat(stats.winRate) / 100),
+      wins: stats.wins,
       winRate: stats.winRate,
       activeDays: days.length,
     },
     allStats: {
       totalTrades: stats.totalTrades,
       hitRate: stats.winRate,
-      wins: Math.round(stats.totalTrades * parseFloat(stats.winRate) / 100),
-      losses: stats.totalTrades - Math.round(stats.totalTrades * parseFloat(stats.winRate) / 100),
-      totalPnlSol: stats.totalPnlSol?.toFixed(4) ?? "0",
+      wins: stats.wins,
+      losses: stats.losses,
       totalFeesUsd: stats.totalFeesUsd?.toFixed(2) ?? "0",
       totalFeesSol: stats.totalFeesSol?.toFixed(2) ?? "0",
+      ilUsd: stats.ilUsd?.toFixed(2) ?? "0",
+      ilSol: stats.ilSol?.toFixed(2) ?? "0",
+      profitFactor,
       avgHold: `${stats.avgHoldHours?.toFixed(1) ?? "?"}h`,
       totalPools: stats.totalPools,
     },
@@ -161,7 +173,7 @@ async function getCardData(period = "weekly") {
 // ── Canvas ──────────────────────────────────────────────────────────
 function generatePnlCard(data) {
   const { createCanvas } = require("canvas");
-  const W = 520, H = 580;
+  const W = 520, H = 600;
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
 
@@ -209,17 +221,21 @@ function generatePnlCard(data) {
   // ── Period & PnL ────────────────────────────────────────────────
   ctx.font = "bold 18px sans-serif"; ctx.fillStyle = "#ffffff";
   ctx.fillText(data.dateRange, 24, 128);
+  const profitLabel = data.source === "lpagent" ? "Total Profit (PnL + Fees)" : "P&L";
   ctx.font = "11px sans-serif"; ctx.fillStyle = "#555555";
   ctx.fillText(`${data.summary.activeDays} days  ·  ${data.summary.totalPositions} trades  ·  WR ${data.summary.winRate}%`, 24, 146);
+
+  ctx.font = "9px sans-serif"; ctx.fillStyle = "#444444";
+  ctx.fillText(profitLabel, 24, 164);
 
   const pnl = data.summary.totalPnlUsd;
   const isProfit = pnl >= 0;
   ctx.font = "bold 28px sans-serif";
   ctx.fillStyle = isProfit ? "#4ade80" : "#f87171";
-  ctx.fillText(fmtUsd(pnl), 24, 184);
+  ctx.fillText(fmtUsd(pnl), 24, 192);
 
   // ── Calendar grid ───────────────────────────────────────────────
-  const gridY = 206;
+  const gridY = 212;
   const cellW = 62, cellH = 64, gap = 4;
   const gridX = 24;
   const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -286,11 +302,13 @@ function generatePnlCard(data) {
   const stats = data.allStats ?? {};
   const feesUsd = stats.totalFeesUsd ? `$${parseFloat(stats.totalFeesUsd).toLocaleString("en", { maximumFractionDigits: 0 })}` : "$0";
   const feesSol = stats.totalFeesSol ? ` (${parseFloat(stats.totalFeesSol).toFixed(1)} SOL)` : "";
+  const ilVal = stats.ilUsd ? fmtUsd(parseFloat(stats.ilUsd)) : "—";
+  const ilSolVal = stats.ilSol ? ` (${parseFloat(stats.ilSol).toFixed(1)} SOL)` : "";
   const statItems = [
     { label: "WIN RATE", value: `${stats.hitRate ?? 0}%  (W:${stats.wins ?? 0} L:${stats.losses ?? 0})`, color: "#4ade80" },
     { label: "FEES EARNED", value: `${feesUsd}${feesSol}`, color: "#facc15" },
-    { label: stats.avgHold ? "AVG HOLD" : "BEST POOL", value: stats.avgHold ?? stats.bestPool ?? "—", color: "#60a5fa" },
-    { label: stats.totalPools ? "POOLS TRADED" : "WORST POOL", value: stats.totalPools ? `${stats.totalPools} pools` : (stats.worstPool ?? "—"), color: "#a78bfa" },
+    { label: "IMPERMANENT LOSS", value: `${ilVal}${ilSolVal}`, color: "#f87171" },
+    { label: "PROFIT FACTOR", value: stats.profitFactor ?? stats.avgHold ?? "—", color: "#a78bfa" },
   ];
   for (let i = 0; i < statItems.length; i++) {
     const sx = 24 + (i % 2) * 240;
@@ -302,7 +320,7 @@ function generatePnlCard(data) {
   }
 
   // ── Source + Timestamp ──────────────────────────────────────────
-  const srcLabel = data.source === "lpagent" ? "LPAgent \u2713" : data.source === "meteora" ? "Meteora" : "local";
+  const srcLabel = data.source === "lpagent" ? "LPAgent \u2713 (fees included)" : data.source === "meteora" ? "Meteora" : "local";
   ctx.textAlign = "right"; ctx.font = "9px sans-serif"; ctx.fillStyle = "#333333";
   ctx.fillText(`${srcLabel}  ·  ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, W - 24, H - 12);
   ctx.textAlign = "left";
