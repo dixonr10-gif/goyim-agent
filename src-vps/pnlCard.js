@@ -90,21 +90,26 @@ function getCardDataLocal(period) {
 }
 
 async function getCardDataLPAgent(period) {
+  // LPAgent periods: Weekly→7D, Monthly/Daily→ALL
   const lpPeriod = period === "weekly" ? "7d" : "allTime";
   const stats = await getLPAgentStats(lpPeriod);
   if (!stats || stats.totalTrades === 0) return null;
-  const openPos = getOpenPositions().length;
 
-  // Build day data from local trades for calendar (LPAgent doesn't have daily breakdown)
+  // Always fetch all-time stats for the bottom grid (lifetime numbers)
+  const allTimeStats = lpPeriod === "7d" ? await getLPAgentStats("allTime") : stats;
+
+  const openPos = getOpenPositions().length;
+  const now = new Date();
+
+  // Build calendar from local trades (LPAgent has no per-day breakdown)
   const { trades } = getFullStats();
   const closed = trades.filter(t => t.closedAt);
-  const now = new Date();
-  let startDate;
-  if (period === "daily") { startDate = new Date(now); startDate.setUTCHours(0, 0, 0, 0); }
-  else if (period === "monthly") { startDate = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1); }
-  else { startDate = new Date(now.getTime() - 7 * 86400000); startDate.setUTCHours(0, 0, 0, 0); }
+  let calStart;
+  if (period === "daily") { calStart = new Date(now); calStart.setUTCHours(0, 0, 0, 0); }
+  else if (period === "monthly") { calStart = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1); }
+  else { calStart = new Date(now.getTime() - 7 * 86400000); calStart.setUTCHours(0, 0, 0, 0); }
   const dayMap = {};
-  for (const t of closed.filter(t => new Date(t.closedAt) >= startDate)) {
+  for (const t of closed.filter(t => new Date(t.closedAt) >= calStart)) {
     const d = t.closedAt.slice(0, 10);
     if (!dayMap[d]) dayMap[d] = { date: d, pnlUsd: 0, positions: 0, wins: 0, losses: 0 };
     dayMap[d].pnlUsd += (parseFloat(t.pnlPercent ?? 0) / 100) * (t.solDeployed ?? 0) * 83;
@@ -113,15 +118,34 @@ async function getCardDataLPAgent(period) {
     if (t.outcome === "loss") dayMap[d].losses++;
   }
   const days = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
-  const dateStr = stats.firstActivity?.slice(0, 10) ?? startDate.toISOString().slice(0, 10);
 
-  // Profit factor: avgWin / avgLoss
+  // For Daily: headline PnL from local trades today (LPAgent has no daily breakdown)
+  let headlinePnl, headlineTrades, headlineWins, headlineWR;
+  if (period === "daily") {
+    const todayStr = now.toISOString().slice(0, 10);
+    const todayTrades = closed.filter(t => t.closedAt?.startsWith(todayStr));
+    headlinePnl = todayTrades.reduce((s, t) => s + (parseFloat(t.pnlPercent ?? 0) / 100) * (t.solDeployed ?? 0) * 83, 0);
+    headlineTrades = todayTrades.length;
+    headlineWins = todayTrades.filter(t => t.outcome === "win").length;
+    headlineWR = headlineTrades > 0 ? ((headlineWins / headlineTrades) * 100).toFixed(0) : "0";
+  } else {
+    headlinePnl = stats.totalProfitUsd;
+    headlineTrades = stats.totalTrades;
+    headlineWins = stats.wins;
+    headlineWR = stats.winRate;
+  }
+
+  const dateStr = period === "daily"
+    ? now.toISOString().slice(0, 10)
+    : (stats.firstActivity?.slice(0, 10) ?? calStart.toISOString().slice(0, 10));
+
+  // Profit factor from all-time stats
   let profitFactor = "—";
-  if (stats.wins > 0 && stats.losses > 0 && stats.totalFeesUsd > 0) {
-    // Approximate: total fees go to wins, IL spread across losses
-    const avgWin = stats.totalFeesUsd / stats.wins;
-    const totalLoss = Math.abs(stats.ilUsd) + stats.totalFeesUsd; // gross loss
-    const avgLoss = totalLoss / stats.losses;
+  const at = allTimeStats;
+  if (at.wins > 0 && at.losses > 0 && at.totalFeesUsd > 0) {
+    const avgWin = at.totalFeesUsd / at.wins;
+    const totalLoss = Math.abs(at.ilUsd) + at.totalFeesUsd;
+    const avgLoss = totalLoss / at.losses;
     if (avgLoss > 0) profitFactor = (avgWin / avgLoss).toFixed(2);
   }
 
@@ -129,24 +153,24 @@ async function getCardDataLPAgent(period) {
     period, dateRange: `${dateStr} — ${now.toISOString().slice(0, 10)}`,
     days, openPositions: openPos,
     summary: {
-      totalPnlUsd: stats.totalProfitUsd,   // Headline: PnL + fees (Fabriq-matching)
-      totalPositions: stats.totalTrades,
-      wins: stats.wins,
-      winRate: stats.winRate,
+      totalPnlUsd: headlinePnl,
+      totalPositions: headlineTrades,
+      wins: headlineWins,
+      winRate: headlineWR,
       activeDays: days.length,
     },
     allStats: {
-      totalTrades: stats.totalTrades,
-      hitRate: stats.winRate,
-      wins: stats.wins,
-      losses: stats.losses,
-      totalFeesUsd: stats.totalFeesUsd?.toFixed(2) ?? "0",
-      totalFeesSol: stats.totalFeesSol?.toFixed(2) ?? "0",
-      ilUsd: stats.ilUsd?.toFixed(2) ?? "0",
-      ilSol: stats.ilSol?.toFixed(2) ?? "0",
+      totalTrades: at.totalTrades,
+      hitRate: at.winRate,
+      wins: at.wins,
+      losses: at.losses,
+      totalFeesUsd: at.totalFeesUsd?.toFixed(2) ?? "0",
+      totalFeesSol: at.totalFeesSol?.toFixed(2) ?? "0",
+      ilUsd: at.ilUsd?.toFixed(2) ?? "0",
+      ilSol: at.ilSol?.toFixed(2) ?? "0",
       profitFactor,
-      avgHold: `${stats.avgHoldHours?.toFixed(1) ?? "?"}h`,
-      totalPools: stats.totalPools,
+      avgHold: `${at.avgHoldHours?.toFixed(1) ?? "?"}h`,
+      totalPools: at.totalPools,
     },
     source: "lpagent",
   };
