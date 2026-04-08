@@ -211,6 +211,92 @@ function registerCommands() {
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }
   });
 
+  // ── PM2 Control Commands ─────────────────────────────────────────
+  bot.command("restart", async (ctx) => {
+    try {
+      const { execSync } = await import("child_process");
+      await ctx.reply("🔄 Restarting goyim-agent...");
+      execSync("pm2 restart goyim-agent", { timeout: 10000 });
+    } catch {}
+    // Note: process will restart, so this reply may not arrive
+  });
+
+  bot.command("pm2status", async (ctx) => {
+    try {
+      const { execSync } = await import("child_process");
+      const raw = execSync("pm2 jlist 2>/dev/null", { timeout: 10000 }).toString();
+      const procs = JSON.parse(raw);
+      const p = procs.find(x => x.name === "goyim-agent");
+      if (!p) { await ctx.reply("❌ Process goyim-agent not found in PM2"); return; }
+      const env = p.pm2_env || {};
+      const uptime = env.pm_uptime ? Math.floor((Date.now() - env.pm_uptime) / 60000) : 0;
+      const uptimeH = Math.floor(uptime / 60);
+      const uptimeM = uptime % 60;
+      const mem = ((p.monit?.memory || 0) / 1048576).toFixed(1);
+      const cpu = p.monit?.cpu ?? 0;
+      const restarts = env.restart_time ?? 0;
+      const status = env.status ?? "unknown";
+      const statusIcon = status === "online" ? "🟢" : status === "stopped" ? "🔴" : "🟡";
+      const pid = p.pid ?? "?";
+      const msg =
+        `<b>⚙️ PM2 Status — goyim-agent</b>\n${"─".repeat(25)}\n\n` +
+        `Status: ${statusIcon} <b>${status.toUpperCase()}</b>\n` +
+        `PID: <code>${pid}</code>\n` +
+        `Uptime: <b>${uptimeH}h ${uptimeM}m</b>\n` +
+        `Memory: <b>${mem} MB</b>\n` +
+        `CPU: <b>${cpu}%</b>\n` +
+        `Restarts: <b>${restarts}</b>\n` +
+        `Node: <b>${env.node_version ?? "?"}</b>`;
+      await ctx.replyWithHTML(msg, mainMenu());
+    } catch (err) { await ctx.reply(`❌ ${err.message}`); }
+  });
+
+  bot.command("logs", async (ctx) => {
+    const arg = ctx.message.text.split(/\s+/)[1]?.toLowerCase();
+    if (arg === "live") {
+      try {
+        const { execSync } = await import("child_process");
+        let raw = execSync("pm2 logs goyim-agent --lines 30 --nostream 2>&1", { timeout: 10000 }).toString();
+        raw = raw.replace(/\x1B\[[0-9;]*[mGKH]/g, "");
+        const lines = raw.split("\n")
+          .map(l => l.replace(/^.*?goyim-ag\s*\|\s*/, "").trim())
+          .filter(l => l.length > 0 && !l.startsWith("[TAILING]") && !l.includes("last ") && !l.includes(".pm2/logs"))
+          .slice(-30);
+        const timeStr = new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit" });
+        let text = `📋 Live Logs — 30 lines\n⏰ ${timeStr} WIB\n━━━━━━━━━━━━━━━\n`;
+        text += lines.join("\n");
+        if (text.length > 4000) text = text.slice(-4000);
+        await ctx.reply(text);
+      } catch (err) { await ctx.reply(`❌ ${err.message}`); }
+      return;
+    }
+    // Default: show log category menu
+    await ctx.reply("📋 Pilih kategori log:", {
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("📈 PnL", "logs_pnl"), Markup.button.callback("🎯 Hunter", "logs_hunter")],
+        [Markup.button.callback("💊 Healer", "logs_healer"), Markup.button.callback("🚨 Error", "logs_error")],
+        [Markup.button.callback("📋 Live 30", "logs_live"), Markup.button.callback("📊 All", "logs_all")],
+        [Markup.button.callback("❌ Cancel", "logs_cancel")],
+      ]),
+    });
+  });
+
+  bot.command("stop", async (ctx) => {
+    await ctx.replyWithHTML(
+      `⚠️ <b>Yakin mau stop bot?</b>\n\nBot akan berhenti total sampai di-start manual.\nKetik /confirmstop untuk konfirmasi.`,
+      mainMenu()
+    );
+  });
+
+  bot.command("confirmstop", async (ctx) => {
+    try {
+      const { execSync } = await import("child_process");
+      await ctx.reply("🔴 Stopping goyim-agent...");
+      execSync("pm2 stop goyim-agent", { timeout: 10000 });
+      await ctx.reply("✅ Bot stopped. Use `pm2 start goyim-agent` on VPS to restart.");
+    } catch (err) { await ctx.reply(`❌ ${err.message}`); }
+  });
+
   bot.command("learn", async (ctx) => {
     const parts = ctx.message.text.split(" ");
     const poolAddress = parts[1]?.trim() ?? null;
@@ -689,6 +775,24 @@ function registerCallbacks() {
   bot.action(/^logs_(.+)$/, async (ctx) => {
     const cat = ctx.match[1];
     if (cat === "cancel") { await ctx.answerCbQuery(); await ctx.editMessageText("↩️", { ...mainMenu() }); return; }
+    if (cat === "live") {
+      await ctx.answerCbQuery("📋 Fetching...");
+      try {
+        const { execSync } = await import("child_process");
+        let raw = execSync("pm2 logs goyim-agent --lines 30 --nostream 2>&1", { timeout: 10000 }).toString();
+        raw = raw.replace(/\x1B\[[0-9;]*[mGKH]/g, "");
+        const lines = raw.split("\n")
+          .map(l => l.replace(/^.*?goyim-ag\s*\|\s*/, "").trim())
+          .filter(l => l.length > 0 && !l.startsWith("[TAILING]") && !l.includes("last ") && !l.includes(".pm2/logs"))
+          .slice(-30);
+        const timeStr = new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit" });
+        let text = `📋 Live Logs — 30 lines\n⏰ ${timeStr} WIB\n━━━━━━━━━━━━━━━\n`;
+        text += lines.join("\n");
+        if (text.length > 4000) text = text.slice(-4000);
+        await ctx.reply(text);
+      } catch (err) { await ctx.reply(`❌ ${err.message}`); }
+      return;
+    }
     await ctx.answerCbQuery("📋 Fetching...");
     const keyword = cat === "all" ? null : cat;
     await sendLogs(ctx, keyword);
@@ -715,6 +819,46 @@ function registerCallbacks() {
       const { sendPnlCard } = await import("./pnlCard.js");
       await sendPnlCard(bot, ctx.chat.id, period);
     } catch (err) { await ctx.reply("❌ Gagal generate card: " + (err.message?.slice(0, 80) ?? "unknown")); }
+  });
+
+  // ── PM2 Control callbacks ─────────────────────────────────────────
+  bot.action("pm2_restart", async (ctx) => {
+    await ctx.answerCbQuery("🔄 Restarting...");
+    try {
+      const { execSync } = await import("child_process");
+      await ctx.editMessageText("🔄 Restarting goyim-agent...", { ...mainMenu() });
+      execSync("pm2 restart goyim-agent", { timeout: 10000 });
+    } catch {}
+  });
+
+  bot.action("pm2_status", async (ctx) => {
+    await ctx.answerCbQuery("⚙️ Loading...");
+    try {
+      const { execSync } = await import("child_process");
+      const raw = execSync("pm2 jlist 2>/dev/null", { timeout: 10000 }).toString();
+      const procs = JSON.parse(raw);
+      const p = procs.find(x => x.name === "goyim-agent");
+      if (!p) { await ctx.editMessageText("❌ Process not found", { ...mainMenu() }); return; }
+      const env = p.pm2_env || {};
+      const uptime = env.pm_uptime ? Math.floor((Date.now() - env.pm_uptime) / 60000) : 0;
+      const uptimeH = Math.floor(uptime / 60);
+      const uptimeM = uptime % 60;
+      const mem = ((p.monit?.memory || 0) / 1048576).toFixed(1);
+      const cpu = p.monit?.cpu ?? 0;
+      const restarts = env.restart_time ?? 0;
+      const status = env.status ?? "unknown";
+      const statusIcon = status === "online" ? "🟢" : status === "stopped" ? "🔴" : "🟡";
+      const msg =
+        `<b>⚙️ PM2 Status — goyim-agent</b>\n${"─".repeat(25)}\n\n` +
+        `Status: ${statusIcon} <b>${status.toUpperCase()}</b>\n` +
+        `PID: <code>${p.pid ?? "?"}</code>\n` +
+        `Uptime: <b>${uptimeH}h ${uptimeM}m</b>\n` +
+        `Memory: <b>${mem} MB</b>\n` +
+        `CPU: <b>${cpu}%</b>\n` +
+        `Restarts: <b>${restarts}</b>\n` +
+        `Node: <b>${env.node_version ?? "?"}</b>`;
+      await ctx.editMessageText(msg, { parse_mode: "HTML", ...mainMenu() });
+    } catch (err) { await ctx.editMessageText(`❌ ${err.message}`, { ...mainMenu() }); }
   });
 
   // ── CA Scanner callbacks ──────────────────────────────────────────
@@ -1154,6 +1298,7 @@ function mainMenu() {
     [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("👀 Watchlist", "btn_watchlist")],
     [Markup.button.callback("⏳ Cooldown", "btn_cooldown"), Markup.button.callback("📋 Logs", "btn_logs")],
     [Markup.button.callback("📊 PnL Card", "btn_pnlcard")],
+    [Markup.button.callback("🔄 Restart", "pm2_restart"), Markup.button.callback("⚙️ PM2 Status", "pm2_status")],
     [
       agentPaused ? Markup.button.callback("▶️ Resume", "resume") : Markup.button.callback("⏸️ Pause", "pause"),
       Markup.button.callback("🔴 Close All", "closeall_confirm_prompt"),
