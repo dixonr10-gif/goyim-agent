@@ -594,7 +594,7 @@ function registerCallbacks() {
       try {
         const result = await closePosition(pos.id);
         const solReturned = result?.solReceived ?? pos.solDeployed;
-        recordTradeClose({ positionId: pos.id, solReturned, poolName: pos.poolName, solDeployed: pos.solDeployed });
+        recordTradeClose({ positionId: pos.id, solReturned, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL_CLOSEALL" });
         closed++;
       } catch {}
     }
@@ -612,7 +612,7 @@ function registerCallbacks() {
       const result = await closePosition(posId);
       const solReturned = result?.solReceived ?? pos?.solDeployed;
       const { recordTradeClose } = await import("./tradeMemory.js");
-      recordTradeClose({ positionId: posId, solReturned, poolName: pos?.poolName, solDeployed: pos?.solDeployed });
+      recordTradeClose({ positionId: posId, solReturned, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason: "MANUAL" });
       const txSigs = result?.txSignatures ?? [];
       let msg = `✅ Posisi closed!`;
       if (txSigs.length > 0) msg += `\n\n🔍 <a href="https://solscan.io/tx/${txSigs[0]}">View TX ↗</a>`;

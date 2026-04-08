@@ -93,7 +93,7 @@ export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeplo
 /**
  * Catat posisi yang ditutup + kalkulasi P&L
  */
-export function recordTradeClose({ positionId, solReturned, preClosePnlPct = null, poolName = null, solDeployed = null }) {
+export function recordTradeClose({ positionId, solReturned, preClosePnlPct = null, poolName = null, solDeployed = null, closeReason = null }) {
   const memory = loadMemory();
 
   let trade = memory.trades.find((t) => t.id === positionId);
@@ -157,6 +157,7 @@ export function recordTradeClose({ positionId, solReturned, preClosePnlPct = nul
   trade.pnlPercent = pnlPercent;
   trade.pnlSource = pnlSource;
   trade.holdDurationHours = holdDurationHours.toFixed(1);
+  if (closeReason) trade.closeReason = closeReason;
   trade.outcome = pnlSource === "unknown" ? "unknown"
     : pnlPercent > 0.1 ? "win" : pnlPercent < -0.1 ? "loss" : "breakeven";
 

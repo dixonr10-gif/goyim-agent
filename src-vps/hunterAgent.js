@@ -328,7 +328,7 @@ export async function runHunter() {
           const result = await closePosition(posId);
           const txSignatures = result?.txSignatures ?? [];
           const solReturned = result?.solReceived ?? pos.solDeployed;
-          recordTradeClose({ positionId: posId, solReturned, preClosePnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed });
+          recordTradeClose({ positionId: posId, solReturned, preClosePnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "LLM_DECISION" });
           await notifyPositionClosed(posId, "LLM decision", txSignatures);
           llmClosedCount++;
         } catch (err) { console.error(`❌ LLM close failed for ${posId}:`, err.message); }
@@ -383,10 +383,14 @@ export async function runHunter() {
               }
             } catch {}
 
-            // Momentum-based strategy selection
+            // Momentum-based strategy selection + pump skip
+            const pumpThreshold = parseFloat(process.env.SKIP_PUMP_1H_THRESHOLD) || 20;
             if (!momentumSkip && priceChange1h !== null) {
               if (priceChange1h < -5) {
                 console.log(`  [Strategy] SKIP - token turun ${priceChange1h.toFixed(1)}% 1h`);
+                momentumSkip = true;
+              } else if (priceChange1h > pumpThreshold) {
+                console.log(`  [PumpFilter] SKIP - ${pool.name} already pumped +${priceChange1h.toFixed(1)}% 1h (threshold ${pumpThreshold}%) — instant OOR risk`);
                 momentumSkip = true;
               } else if (priceChange1h > 2) {
                 decision.strategy = "bidask";

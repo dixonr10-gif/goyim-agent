@@ -8,7 +8,7 @@ import { recordTradeClose, getFullStats } from "./tradeMemory.js";
 import { maybeEvolveThresholds } from "./thresholdEvolver.js";
 import { analyzeClosedTrade } from "./postTradeAnalyzer.js";
 import { notifyPositionClosed, notifyError, notifyMessage, isAgentPaused } from "./telegramBot.js";
-import { autoSwapTokensToSOL } from "./autoSwap.js";
+import { autoSwapTokensToSOL, retryPendingSwaps } from "./autoSwap.js";
 import { recordTokenLoss, recordOORStrike } from "./blacklistManager.js";
 import { checkAndClaimFees } from "./feeCompounder.js";
 import { recordPoolClose } from "./poolMemory.js";
@@ -39,7 +39,7 @@ export async function runEmergencyPriceCheck() {
             const result = await closePosition(pos.id);
             const txSigs = result?.txSignatures ?? [];
             const solReturned = result?.solReceived ?? pos.solDeployed;
-            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed });
+            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EMERGENCY_SL" });
             await notifyPositionClosed(pos.id, `emergency exit: PnL ${pnlPct.toFixed(1)}%`, txSigs);
             if (closedTrade?.outcome === "loss") {
               try { recordTokenLoss(closedTrade.poolName); } catch {}
@@ -61,6 +61,9 @@ export async function runHealer() {
   console.log(`💊 Healer Agent — Iteration #${healerIteration} | ${new Date().toLocaleTimeString()}`);
 
   try {
+    // Retry any pending swaps from previous failed attempts
+    try { await retryPendingSwaps(notifyMessage); } catch {}
+
     const syncResult = await syncOnChainPositions();
     const manualCloses = syncResult?.manuallyClosedPositions ?? [];
 
@@ -69,7 +72,7 @@ export async function runHealer() {
       for (const pos of manualCloses) {
         try {
           console.log(`  [ManualClose] recording ${pos.id} (${pos.poolName ?? pos.pool?.slice(0,8)})`);
-          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed });
+          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL" });
           await notifyMessage(
             `🔄 <b>Manual close detected</b>\n\n` +
             `Pool: ${pos.poolName ?? "?"}\n` +
@@ -110,7 +113,17 @@ export async function runHealer() {
         const txSignatures = result?.txSignatures ?? [];
         const pos = openPos.find(p => p.id === exit.positionId);
         const solReturned = exit.currentValue ?? result?.solReceived ?? pos?.solDeployed;
-        const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed });
+        // Derive closeReason from exit.reason string
+        let closeReason = "UNKNOWN";
+        const r = (exit.reason ?? "").toLowerCase();
+        if (r.includes("out of range")) closeReason = r.includes("left") || r.includes("dump") ? "OOR_LEFT" : "OOR_RIGHT";
+        else if (r.includes("trailing")) closeReason = "TRAILING_TP";
+        else if (r.includes("stop") || r.includes("sl")) closeReason = "SL";
+        else if (r.includes("take profit") || r.includes("fee tp")) closeReason = "TP";
+        else if (r.includes("max hold")) closeReason = "MAX_HOLD";
+        else if (r.includes("fee apr")) closeReason = "FEE_APR_FLOOR";
+        else if (r.includes("volatility")) closeReason = "VOLATILITY";
+        const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason });
         await notifyPositionClosed(exit.positionId, exit.reason, txSignatures);
         closedCount++;
 

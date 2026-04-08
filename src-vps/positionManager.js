@@ -215,8 +215,20 @@ export async function openPosition(decision) {
     const activeBin = await dlmmPool.getActiveBin();
     const binCount = (typeof binRange === "number" ? binRange : binRange?.upper) || 50;
     console.log(`  [Bins] using ${binCount} bins for ${strategy ?? "spot"} range`);
-    const lowerBinId = solIsY ? activeBin.binId - binCount : activeBin.binId + 1;
-    const upperBinId = solIsY ? activeBin.binId - 1 : activeBin.binId + binCount;
+
+    let lowerBinId, upperBinId;
+    if ((strategy ?? "spot").toLowerCase() === "bidask") {
+      // BidAsk: 40% below + 60% above active bin — captures upside momentum
+      const binsBelow = Math.floor(binCount * 0.4);
+      const binsAbove = Math.floor(binCount * 0.6);
+      lowerBinId = solIsY ? activeBin.binId - binsBelow : activeBin.binId + 1;
+      upperBinId = solIsY ? activeBin.binId + binsAbove : activeBin.binId + binCount;
+      console.log(`  [Bins] BidAsk range: ${binsBelow} below + ${binsAbove} above active bin ${activeBin.binId}`);
+    } else {
+      // Spot: all below active bin (single-sided SOL deposit)
+      lowerBinId = solIsY ? activeBin.binId - binCount : activeBin.binId + 1;
+      upperBinId = solIsY ? activeBin.binId - 1 : activeBin.binId + binCount;
+    }
     const solLamports = Math.floor(config.maxSolPerPosition * 1e9);
 
     const positionKeypair = require("@solana/web3.js").Keypair.generate();
@@ -802,7 +814,7 @@ export async function rebalancePosition(positionId) {
   // Record the closed trade + notify Telegram (was missing — caused ghost closes)
   try {
     const { recordTradeClose } = await import("./tradeMemory.js");
-    recordTradeClose({ positionId, solReturned: solReceived, poolName: posData.poolName, solDeployed: posData.solDeployed });
+    recordTradeClose({ positionId, solReturned: solReceived, poolName: posData.poolName, solDeployed: posData.solDeployed, closeReason: "REBALANCE" });
   } catch (e) { console.warn(`  [Rebalance] recordTradeClose failed: ${e.message}`); }
   try {
     const { notifyPositionClosed } = await import("./telegramBot.js");
