@@ -781,16 +781,27 @@ export async function rebalancePosition(positionId) {
   const pos = openPositions.get(positionId);
   if (!pos) throw new Error(`Position ${positionId} not found for rebalance`);
   console.log(`🔄 Rebalancing ${positionId} (pool: ${pos.pool?.slice(0, 8)}...)...`);
-  await closePosition(positionId);
-  const newPosId = await openPosition({
-    targetPool: pos.pool,
-    strategy: pos.strategy ?? "spot",
-    binRange: { upper: 50 },
-    confidence: 70,
-    rationale: "auto-rebalance after OOR",
-  });
-  console.log(`✅ Rebalance complete: ${positionId} → ${newPosId}`);
-  return newPosId;
+  const closeResult = await closePosition(positionId);
+  // Use actual SOL received from close as the new deposit amount
+  const solReceived = closeResult?.solReceived ?? pos.solDeployed ?? config.maxSolPerPosition;
+  console.log(`  [Rebalance] solReceived=${solReceived.toFixed?.(4) ?? solReceived} → re-opening with this amount`);
+  const origMax = config.maxSolPerPosition;
+  config.maxSolPerPosition = solReceived;
+  try {
+    const newPosId = await openPosition({
+      targetPool: pos.pool,
+      strategy: pos.strategy ?? "spot",
+      binRange: { upper: 50 },
+      confidence: 70,
+      rationale: "auto-rebalance after OOR",
+    });
+    config.maxSolPerPosition = origMax;
+    console.log(`✅ Rebalance complete: ${positionId} → ${newPosId}`);
+    return newPosId;
+  } catch (err) {
+    config.maxSolPerPosition = origMax;
+    throw err;
+  }
 }
 
 export async function checkOutOfRange(positionId) {
