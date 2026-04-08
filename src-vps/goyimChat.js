@@ -150,7 +150,7 @@ async function buildTradingContext() {
       }
     }
   } catch {}
-  try { const b = loadBrain(); context += `Brain v${b.version}: ${(b.selfWrittenRules ?? []).slice(0, 2).join(" | ")}\n`; } catch {}
+  try { const b = loadBrain(); context += `Brain v${b.version}: ${(b.observations ?? []).slice(0, 2).join(" | ")}\n`; } catch {}
 
   // Trade history + stats
   try {
@@ -285,13 +285,13 @@ function buildReviewContext() {
     }
   } catch(e) { ctx += `Trade stats error: ${e.message}\n`; }
 
-  // Brain
+  // Brain (observations only)
   try {
     const brain = loadBrain();
-    ctx += `\n=== AGENT BRAIN v${brain.version ?? "?"} ===\n`;
-    ctx += `Last reflection: ${brain.latestReflection ?? "none"}\n`;
-    if ((brain.selfWrittenRules ?? []).length > 0) ctx += `Rules: ${brain.selfWrittenRules.slice(0,3).join(" | ")}\n`;
-    if ((brain.redFlags ?? []).length > 0) ctx += `Red flags: ${brain.redFlags.slice(0,3).join(" | ")}\n`;
+    ctx += `\n=== AGENT BRAIN v${brain.version ?? "?"} (observations) ===\n`;
+    const obs = brain.observations ?? [];
+    if (obs.length > 0) ctx += `Observations: ${obs.slice(0,5).join(" | ")}\n`;
+    else ctx += `No observations yet.\n`;
   } catch(e) { ctx += `Brain error: ${e.message}\n`; }
 
   return ctx;
