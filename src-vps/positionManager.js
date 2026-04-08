@@ -219,11 +219,12 @@ export async function openPosition(decision) {
     let lowerBinId, upperBinId;
     if ((strategy ?? "spot").toLowerCase() === "bidask") {
       // BidAsk: 40% below + 60% above active bin — captures upside momentum
-      const binsBelow = Math.floor(binCount * 0.4);
-      const binsAbove = Math.floor(binCount * 0.6);
-      lowerBinId = solIsY ? activeBin.binId - binsBelow : activeBin.binId + 1;
-      upperBinId = solIsY ? activeBin.binId + binsAbove : activeBin.binId + binCount;
-      console.log(`  [Bins] BidAsk range: ${binsBelow} below + ${binsAbove} above active bin ${activeBin.binId}`);
+      // Active bin is included in range, so split (binCount - 1) to avoid exceeding MAX_BIN_ARRAY_SIZE (70)
+      const binsBelow = Math.floor((binCount - 1) * 0.4);
+      const binsAbove = binCount - 1 - binsBelow;
+      lowerBinId = solIsY ? activeBin.binId - binsBelow : activeBin.binId - binsAbove;
+      upperBinId = solIsY ? activeBin.binId + binsAbove : activeBin.binId + binsBelow;
+      console.log(`  [Bins] BidAsk range: ${binsBelow} below + 1 active + ${binsAbove} above = ${binsBelow + 1 + binsAbove} total (max 70)`);
     } else {
       // Spot: all below active bin (single-sided SOL deposit)
       lowerBinId = solIsY ? activeBin.binId - binCount : activeBin.binId + 1;
