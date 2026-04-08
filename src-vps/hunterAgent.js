@@ -10,7 +10,7 @@ import { openPosition, getOpenPositions, syncOnChainPositions, checkWalletBalanc
 import { recordTradeOpen, recordTradeClose, getMemoryContextForLLM, isPoolBlacklisted, getFullStats } from "./tradeMemory.js";
 import { getRecentLessonsForLLM } from "./postTradeAnalyzer.js";
 import { maybeLearnPatterns, getPatternsForLLM } from "./patternLearner.js";
-import { maybeUpdateBrain, getBrainContextForLLM } from "./selfImprovingPrompt.js";
+import { getBrainContextForLLM } from "./selfImprovingPrompt.js";
 import { notifyPositionOpened, notifyPositionClosed, notifyAgentDecision, notifyError, notifyMessage, isAgentPaused } from "./telegramBot.js";
 import { autoSwapTokensToSOL } from "./autoSwap.js";
 import { isOnCooldown, getCooldownRemaining, extractTokenSymbol, setCooldown } from "./cooldownManager.js";
@@ -167,9 +167,8 @@ export async function runHunter() {
     // Decay expired blacklists (7d)
     try { decayBlacklist(); } catch {}
 
-    // Learning systems
+    // Learning systems (brain disabled — EVOLVE only)
     const { stats, trades: allTrades } = getFullStats();
-    await maybeUpdateBrain(stats);
     await maybeLearnPatterns(allTrades);
 
     // Sync on-chain state
