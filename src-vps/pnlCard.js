@@ -61,7 +61,8 @@ function getCardDataLocal(period) {
   const now = new Date();
   let startDate;
   if (period === "daily") {
-    startDate = new Date(now); startDate.setUTCHours(0, 0, 0, 0);
+    // Calendar shows full current month; header stats = today only
+    startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   } else if (period === "monthly") {
     startDate = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1);
   } else {
@@ -78,13 +79,27 @@ function getCardDataLocal(period) {
     if (t.outcome === "loss") dayMap[d].losses++;
   }
   const days = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
-  const totalPos = filtered.length;
-  const wins = filtered.filter(t => t.outcome === "win").length;
   const openPos = getOpenPositions().length;
+
+  // For daily: header stats = today only
+  let summaryPnl, summaryTrades, summaryWins, summaryWR;
+  if (period === "daily") {
+    const todayStr = now.toISOString().slice(0, 10);
+    const todayTrades = closed.filter(t => t.closedAt?.startsWith(todayStr));
+    summaryPnl = todayTrades.reduce((s, t) => s + (parseFloat(t.pnlPercent ?? 0) / 100) * (t.solDeployed ?? 0) * (t.solPriceAtEntry ?? 80), 0);
+    summaryTrades = todayTrades.length;
+    summaryWins = todayTrades.filter(t => t.outcome === "win").length;
+    summaryWR = summaryTrades > 0 ? ((summaryWins / summaryTrades) * 100).toFixed(0) : "0";
+  } else {
+    summaryPnl = days.reduce((s, d) => s + d.pnlUsd, 0);
+    summaryTrades = filtered.length;
+    summaryWins = filtered.filter(t => t.outcome === "win").length;
+    summaryWR = summaryTrades > 0 ? ((summaryWins / summaryTrades) * 100).toFixed(0) : "0";
+  }
   return {
     period, dateRange: `${startDate.toISOString().slice(0,10)} — ${now.toISOString().slice(0,10)}`,
     days, openPositions: openPos,
-    summary: { totalPnlUsd: days.reduce((s, d) => s + d.pnlUsd, 0), totalPositions: totalPos, wins, winRate: totalPos > 0 ? ((wins / totalPos) * 100).toFixed(0) : "0", activeDays: days.length },
+    summary: { totalPnlUsd: summaryPnl, totalPositions: summaryTrades, wins: summaryWins, winRate: summaryWR, activeDays: days.length },
     allStats: stats, source: "local",
   };
 }
@@ -105,7 +120,7 @@ async function getCardDataLPAgent(period) {
   const { trades } = getFullStats();
   const closed = trades.filter(t => t.closedAt);
   let calStart;
-  if (period === "daily") { calStart = new Date(now); calStart.setUTCHours(0, 0, 0, 0); }
+  if (period === "daily") { calStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)); }
   else if (period === "monthly") { calStart = new Date(now.getUTCFullYear(), now.getUTCMonth(), 1); }
   else { calStart = new Date(now.getTime() - 7 * 86400000); calStart.setUTCHours(0, 0, 0, 0); }
   const dayMap = {};
@@ -197,7 +212,17 @@ async function getCardData(period = "weekly") {
 // ── Canvas ──────────────────────────────────────────────────────────
 function generatePnlCard(data) {
   const { createCanvas } = require("canvas");
-  const W = 520, H = 600;
+  const W = 520;
+  // Compute calendar rows for dynamic height
+  let calRows = 5;
+  if (data.period === "daily") {
+    const now = new Date();
+    const year = now.getUTCFullYear(), month = now.getUTCMonth();
+    const firstDow = new Date(Date.UTC(year, month, 1)).getUTCDay();
+    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    calRows = Math.ceil((firstDow + daysInMonth) / 7);
+  }
+  const H = 600 + (calRows - 5) * 68;
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
 
@@ -244,10 +269,19 @@ function generatePnlCard(data) {
 
   // ── Period & PnL ────────────────────────────────────────────────
   ctx.font = "bold 18px sans-serif"; ctx.fillStyle = "#ffffff";
-  ctx.fillText(data.dateRange, 24, 128);
+  if (data.period === "daily") {
+    const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const now = new Date();
+    ctx.fillText(`${months[now.getUTCMonth()]} ${now.getUTCFullYear()}`, 24, 128);
+  } else {
+    ctx.fillText(data.dateRange, 24, 128);
+  }
   const profitLabel = data.source === "lpagent" ? "Total Profit (PnL + Fees)" : "P&L";
   ctx.font = "11px sans-serif"; ctx.fillStyle = "#555555";
-  ctx.fillText(`${data.summary.activeDays} days  ·  ${data.summary.totalPositions} trades  ·  WR ${data.summary.winRate}%`, 24, 146);
+  const statsLabel = data.period === "daily"
+    ? `Today: ${data.summary.totalPositions} trades  ·  WR ${data.summary.winRate}%  ·  ${data.summary.activeDays} active days this month`
+    : `${data.summary.activeDays} days  ·  ${data.summary.totalPositions} trades  ·  WR ${data.summary.winRate}%`;
+  ctx.fillText(statsLabel, 24, 146);
 
   ctx.font = "9px sans-serif"; ctx.fillStyle = "#444444";
   ctx.fillText(profitLabel, 24, 164);
@@ -269,41 +303,68 @@ function generatePnlCard(data) {
     ctx.fillText(dayLabels[i], gridX + i * (cellW + gap) + 4, gridY - 4);
   }
 
-  // Build calendar cells — last 5 weeks or current period
+  // Build calendar cells
   const dayDataMap = {};
   for (const d of data.days) dayDataMap[d.date] = d;
 
-  const endDate = new Date();
-  const startOffset = endDate.getUTCDay(); // 0=Sun
-  const calStart = new Date(endDate.getTime() - (startOffset + 28) * 86400000);
-  calStart.setUTCHours(0, 0, 0, 0);
+  let calStartDate, totalCells;
+  const nowCal = new Date();
+  if (data.period === "daily") {
+    // Monthly calendar: all days in current month
+    const year = nowCal.getUTCFullYear(), month = nowCal.getUTCMonth();
+    const firstDay = new Date(Date.UTC(year, month, 1));
+    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    const startDow = firstDay.getUTCDay(); // 0=Sun
+    calStartDate = new Date(firstDay.getTime() - startDow * 86400000);
+    totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
+  } else {
+    // Last 5 weeks
+    const startOffset = nowCal.getUTCDay();
+    calStartDate = new Date(nowCal.getTime() - (startOffset + 28) * 86400000);
+    calStartDate.setUTCHours(0, 0, 0, 0);
+    totalCells = 35;
+  }
+
+  // For daily: know which days belong to current month
+  const curMonth = nowCal.getUTCMonth();
+  const todayStr = nowCal.toISOString().slice(0, 10);
 
   let row = 0;
-  const calDate = new Date(calStart);
-  for (let i = 0; i < 35; i++) {
+  const calDate = new Date(calStartDate);
+  for (let i = 0; i < totalCells; i++) {
     const col = calDate.getUTCDay();
     if (i > 0 && col === 0) row++;
     const dateStr = calDate.toISOString().slice(0, 10);
     const dayData = dayDataMap[dateStr];
+    const isCurrentMonth = data.period !== "daily" || calDate.getUTCMonth() === curMonth;
+    const isToday = dateStr === todayStr;
     const cx = gridX + col * (cellW + gap);
     const cy = gridY + row * (cellH + gap);
 
     // Cell background
     roundRect(ctx, cx, cy, cellW, cellH, 6);
-    if (dayData) {
+    if (!isCurrentMonth) {
+      ctx.fillStyle = "#0a0a0a";
+    } else if (dayData) {
       ctx.fillStyle = dayData.pnlUsd >= 0 ? "#0d2b1a" : "#2b0d0d";
     } else {
       ctx.fillStyle = "#111111";
     }
     ctx.fill();
-    ctx.strokeStyle = dayData ? (dayData.pnlUsd >= 0 ? "#1a4a2e" : "#4a1a1a") : "#1a1a1a";
-    ctx.lineWidth = 1; ctx.stroke();
+    if (isToday && data.period === "daily") {
+      ctx.strokeStyle = "#4ade80"; ctx.lineWidth = 2;
+    } else {
+      ctx.strokeStyle = dayData ? (dayData.pnlUsd >= 0 ? "#1a4a2e" : "#4a1a1a") : "#1a1a1a";
+      ctx.lineWidth = 1;
+    }
+    ctx.stroke();
 
     // Date number
-    ctx.font = "9px sans-serif"; ctx.fillStyle = "#444444";
+    ctx.font = "9px sans-serif";
+    ctx.fillStyle = isCurrentMonth ? (isToday ? "#ffffff" : "#444444") : "#222222";
     ctx.fillText(String(calDate.getUTCDate()), cx + 4, cy + 12);
 
-    if (dayData) {
+    if (dayData && isCurrentMonth) {
       // PnL
       ctx.font = "bold 11px sans-serif";
       ctx.fillStyle = dayData.pnlUsd >= 0 ? "#4ade80" : "#f87171";
@@ -317,7 +378,7 @@ function generatePnlCard(data) {
   }
 
   // ── Divider ─────────────────────────────────────────────────────
-  const divY = gridY + 5 * (cellH + gap) + 12;
+  const divY = gridY + calRows * (cellH + gap) + 12;
   ctx.beginPath(); ctx.moveTo(24, divY); ctx.lineTo(W - 24, divY);
   ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 1; ctx.stroke();
 
