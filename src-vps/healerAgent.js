@@ -39,7 +39,7 @@ export async function runEmergencyPriceCheck() {
             const result = await closePosition(pos.id);
             const txSigs = result?.txSignatures ?? [];
             const solReturned = result?.solReceived ?? pos.solDeployed;
-            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EMERGENCY_SL" });
+            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EMERGENCY_SL", binRange: pos.binRange });
             await notifyPositionClosed(pos.id, `emergency exit: PnL ${pnlPct.toFixed(1)}%`, txSigs);
             if (closedTrade?.outcome === "loss") {
               try { recordTokenLoss(closedTrade.poolName); } catch {}
@@ -72,7 +72,7 @@ export async function runHealer() {
       for (const pos of manualCloses) {
         try {
           console.log(`  [ManualClose] recording ${pos.id} (${pos.poolName ?? pos.pool?.slice(0,8)})`);
-          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL" });
+          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL", binRange: pos.binRange });
           await notifyMessage(
             `🔄 <b>Manual close detected</b>\n\n` +
             `Pool: ${pos.poolName ?? "?"}\n` +
@@ -123,7 +123,7 @@ export async function runHealer() {
         else if (r.includes("max hold")) closeReason = "MAX_HOLD";
         else if (r.includes("fee apr")) closeReason = "FEE_APR_FLOOR";
         else if (r.includes("volatility")) closeReason = "VOLATILITY";
-        const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason });
+        const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason, binRange: pos?.binRange });
         await notifyPositionClosed(exit.positionId, exit.reason, txSignatures);
         closedCount++;
 

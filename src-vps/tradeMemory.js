@@ -61,7 +61,7 @@ function saveMemory(memory) {
 /**
  * Catat posisi baru yang dibuka
  */
-export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeployed, decision }) {
+export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeployed, decision, binRange = null }) {
   const memory = loadMemory();
 
   const trade = {
@@ -75,8 +75,10 @@ export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeplo
     llmConfidence: decision.confidence,
     llmRationale: decision.rationale,
     opportunityScore: decision.opportunityScore ?? null,
+    binRange: binRange ?? null,
 
     // Di-isi saat close
+    exitReason: null,
     solReturned: null,
     pnlSol: null,
     pnlPercent: null,
@@ -93,7 +95,7 @@ export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeplo
 /**
  * Catat posisi yang ditutup + kalkulasi P&L
  */
-export function recordTradeClose({ positionId, solReturned, preClosePnlPct = null, poolName = null, solDeployed = null, closeReason = null }) {
+export function recordTradeClose({ positionId, solReturned, preClosePnlPct = null, poolName = null, solDeployed = null, closeReason = null, binRange = null }) {
   const memory = loadMemory();
 
   let trade = memory.trades.find((t) => t.id === positionId);
@@ -157,7 +159,8 @@ export function recordTradeClose({ positionId, solReturned, preClosePnlPct = nul
   trade.pnlPercent = pnlPercent;
   trade.pnlSource = pnlSource;
   trade.holdDurationHours = holdDurationHours.toFixed(1);
-  if (closeReason) trade.closeReason = closeReason;
+  if (closeReason) trade.exitReason = closeReason;
+  if (binRange) trade.binRange = binRange;
   trade.outcome = pnlSource === "unknown" ? "unknown"
     : pnlPercent > 0.1 ? "win" : pnlPercent < -0.1 ? "loss" : "breakeven";
 

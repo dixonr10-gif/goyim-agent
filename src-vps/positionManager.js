@@ -226,9 +226,12 @@ export async function openPosition(decision) {
       upperBinId = solIsY ? activeBin.binId + binsAbove : activeBin.binId + binsBelow;
       console.log(`  [Bins] BidAsk range: ${binsBelow} below + 1 active + ${binsAbove} above = ${binsBelow + 1 + binsAbove} total (max 70)`);
     } else {
-      // Spot: all below active bin (single-sided SOL deposit)
-      lowerBinId = solIsY ? activeBin.binId - binCount : activeBin.binId + 1;
-      upperBinId = solIsY ? activeBin.binId - 1 : activeBin.binId + binCount;
+      // Spot: 90% below + 10% above active bin (buffer to avoid instant OOR)
+      const binsAbove = Math.floor(binCount * 0.1);
+      const binsBelow = binCount - 1 - binsAbove; // -1 for active bin
+      lowerBinId = solIsY ? activeBin.binId - binsBelow : activeBin.binId - binsAbove;
+      upperBinId = solIsY ? activeBin.binId + binsAbove : activeBin.binId + binsBelow;
+      console.log(`  [Bins] Spot range: ${binsBelow} below + 1 active + ${binsAbove} above = ${binsBelow + 1 + binsAbove} total`);
     }
     const solLamports = Math.floor(config.maxSolPerPosition * 1e9);
 
@@ -272,7 +275,7 @@ export async function openPosition(decision) {
       pool: targetPool,
       poolName: poolName ?? null,
       strategy: strategy ?? "spot",
-      binRange: { lower: lowerBinId, upper: upperBinId },
+      binRange: { lower: lowerBinId, upper: upperBinId, active: activeBin.binId, strategy: strategy ?? "spot" },
       openedAt: new Date().toISOString(),
       solDeployed: config.maxSolPerPosition,
       solPriceAtEntry,

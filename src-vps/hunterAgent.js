@@ -533,6 +533,7 @@ export async function runHunter() {
                 solDeployed: dynamicSol,
                 positionAddress: newPos?.positionAddress,
                 entryTokenPrice: newPos?.entryTokenPrice,
+                binRange: newPos?.binRange ?? null,
                 decision,
               });
               recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });
