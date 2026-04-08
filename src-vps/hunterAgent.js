@@ -384,7 +384,7 @@ export async function runHunter() {
             } catch {}
 
             // Momentum-based strategy selection + pump skip
-            const pumpThreshold = parseFloat(process.env.SKIP_PUMP_1H_THRESHOLD) || 20;
+            const pumpThreshold = parseFloat(process.env.SKIP_PUMP_1H_THRESHOLD) || 30;
             if (!momentumSkip && priceChange1h !== null) {
               if (priceChange1h < -5) {
                 console.log(`  [Strategy] SKIP - token turun ${priceChange1h.toFixed(1)}% 1h`);
