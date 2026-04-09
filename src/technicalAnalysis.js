@@ -150,11 +150,8 @@ export function getTASignal(candles) {
   if (rsi < 30) {
     return { rsi, ema20, currentPrice, signal: "SKIP", reason: `oversold/dumping RSI ${rsi.toFixed(1)}` };
   }
-  // Price below EMA20 → downtrend, skip
-  if (currentPrice < ema20) {
-    return { rsi, ema20, currentPrice, signal: "SKIP", reason: "downtrend price below EMA20" };
-  }
 
-  // All clear → BUY
-  return { rsi, ema20, currentPrice, signal: "BUY", reason: "all clear" };
+  // EMA20 still computed and included for LLM context, but NOT used as filter
+  // DLMM LP benefits from sideways markets — EMA filter would skip good opportunities
+  return { rsi, ema20, currentPrice, signal: "BUY", reason: `RSI ${rsi.toFixed(1)} neutral` };
 }
