@@ -19,6 +19,7 @@ import { checkSmartWalletOverlap } from "./smartWallets.js";
 import { recordLastRun } from "./healthCheck.js";
 import { recordHunterRunResult } from "./thresholdEvolver.js";
 import { getPoolScoreAdjustment, recordPoolDeploy } from "./poolMemory.js";
+import { getCandles, getTASignal } from "./technicalAnalysis.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
@@ -276,6 +277,30 @@ export async function runHunter() {
 
     const formattedPools = formatPoolsForLLM(availablePools);
 
+    // TA enrichment (RSI + EMA20) for top candidates
+    console.log("\n📊 Computing TA (RSI + EMA20)...");
+    const taMap = new Map();
+    const taCandidates = availablePools.slice(0, 10);
+    await Promise.all(taCandidates.map(async (pool) => {
+      try {
+        const candles = await getCandles(pool.address);
+        if (candles) {
+          const ta = getTASignal(candles);
+          taMap.set(pool.address, ta);
+          console.log(`  📊 ${pool.name}: RSI ${ta.rsi?.toFixed(1) ?? "?"} | EMA20 ${ta.ema20?.toFixed(6) ?? "?"} | ${ta.signal}`);
+        } else {
+          console.log(`  ⚠️ TA: No candle data for ${pool.name}, skipping TA filter`);
+        }
+      } catch (err) {
+        console.log(`  ⚠️ TA error for ${pool.name}: ${err.message}`);
+      }
+    }));
+
+    // Attach TA data to formatted pools for LLM prompt
+    for (const fp of formattedPools) {
+      fp.ta = taMap.get(fp.address) ?? null;
+    }
+
     // LLM decision
     const decision = await agentDecide({
       pools: formattedPools,
@@ -507,6 +532,25 @@ export async function runHunter() {
               dynamicSol = Math.min(dynamicSol, config.maxSolPerPosition);
               console.log(`  [PositionSize] ${tokenSym ?? "?"} score=${totalScore} (organic=${organic} opp=${opportunity}) → ${dynamicSol} SOL`);
             } catch {}
+
+            // ── TA filter (RSI + EMA20) before opening ──────────────
+            if (!momentumSkip) {
+              let ta = taMap.get(pool.address);
+              if (!ta) {
+                try {
+                  const candles = await getCandles(pool.address);
+                  if (candles) ta = getTASignal(candles);
+                  else console.log(`  ⚠️ TA: No candle data for ${pool.name}, skipping TA filter`);
+                } catch {}
+              }
+              if (ta && ta.signal === "SKIP") {
+                console.log(`  ⛔ TA Skip: ${pool.name} — ${ta.reason}`);
+                momentumSkip = true;
+              } else if (ta) {
+                console.log(`  📊 TA: RSI ${ta.rsi.toFixed(1)} | EMA20 ${ta.ema20.toFixed(6)} | ${ta.signal}`);
+                decision.ta = ta;
+              }
+            }
 
             if (!momentumSkip && decision.confidence >= 60) {
             // Skip if same pool address already has an open (non-mock) position

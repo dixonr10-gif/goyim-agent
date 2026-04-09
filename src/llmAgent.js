@@ -116,9 +116,16 @@ Respond ONLY in this JSON format:
 function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContext, lessonsContext, patternsContext }) {
   const poolList = pools.map((p, i) => {
     const a = poolAnalyses[i] ?? {};
-    return `[${i+1}] NAME: ${p.name}
+    let line = `[${i+1}] NAME: ${p.name}
     ADDRESS: ${p.address}
     score=${a.score ?? "?"} | vol=${a.volumeCategory ?? "?"} | trend=${a.trend ?? "?"} | apr=${p.feeApr}% | tvl=$${p.tvl} | uptrend=${p.uptrend ?? false}`;
+    if (p.ta && p.ta.rsi !== null) {
+      const rsiLabel = p.ta.rsi > 70 ? "overbought" : p.ta.rsi < 30 ? "oversold" : "neutral";
+      const emaDir = p.ta.currentPrice >= p.ta.ema20 ? "above" : "below";
+      const emaPct = p.ta.ema20 > 0 ? (((p.ta.currentPrice - p.ta.ema20) / p.ta.ema20) * 100).toFixed(1) : "0";
+      line += `\n    TA: RSI ${p.ta.rsi.toFixed(1)} (${rsiLabel}) | Price vs EMA20: ${emaDir} (${emaPct}%) | Signal: ${p.ta.signal}`;
+    }
+    return line;
   }).join("\n\n");
 
   return `=== AVAILABLE POOLS (${pools.length}) ===

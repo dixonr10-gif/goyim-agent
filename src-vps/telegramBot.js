@@ -1054,6 +1054,11 @@ export async function notifyPositionOpened(position, decision) {
   msg += `\nSOL: <b>${position.solDeployed} SOL</b> | Confidence: <b>${decision.confidence}%</b>\n`;
   msg += `Strategy: <b>${esc(position.strategy)}</b>\n`;
 
+  if (decision.ta && decision.ta.rsi !== null) {
+    const emaDir = decision.ta.currentPrice >= decision.ta.ema20 ? "above" : "below";
+    msg += `📊 RSI: <b>${decision.ta.rsi.toFixed(1)}</b> | EMA: <b>${emaDir}</b>\n`;
+  }
+
   if (position.tokenCheck?.reasons?.length) {
     msg += `\n📊 ${esc(position.tokenCheck.reasons.join(" | "))}\n`;
   }

@@ -40,15 +40,18 @@ export async function agentDecide({ pools, poolAnalyses = [], openPositions, tra
       { role: "user", content: userPrompt },
     ],
     temperature: 0.2,
-    max_tokens: 500,
+    max_tokens: 1000,
   });
 
   try {
-    const match = raw.match(/\{[\s\S]*\}/);
+    // Strip markdown fences and whitespace before parsing
+    let cleaned = raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+    const match = cleaned.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("No JSON found");
     return JSON.parse(match[0]);
   } catch {
-    throw new Error("LLM returned non-JSON: " + raw.slice(0, 100));
+    console.log(`[LLM] JSON parse failed, defaulting to skip. Raw: ${raw.slice(0, 120)}`);
+    return { action: "skip", targetPool: null, strategy: "spot", confidence: 0, rationale: "LLM response not parseable" };
   }
 }
 
@@ -130,9 +133,16 @@ Respond ONLY in this JSON format:
 function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContext, lessonsContext, patternsContext }) {
   const poolList = pools.map((p, i) => {
     const a = poolAnalyses[i] ?? {};
-    return `[${i+1}] NAME: ${p.name}
+    let line = `[${i+1}] NAME: ${p.name}
     ADDRESS: ${p.address}
     score=${a.opportunityScore ?? "?"} | vol=${a.volatility?.level ?? "?"} | trend=${a.trend?.direction ?? "?"} | apr=${p.feeApr}% | tvl=$${p.tvl} | uptrend=${p.uptrend ?? false} (bonus only, NOT required)`;
+    if (p.ta && p.ta.rsi !== null) {
+      const rsiLabel = p.ta.rsi > 70 ? "overbought" : p.ta.rsi < 30 ? "oversold" : "neutral";
+      const emaDir = p.ta.currentPrice >= p.ta.ema20 ? "above" : "below";
+      const emaPct = p.ta.ema20 > 0 ? (((p.ta.currentPrice - p.ta.ema20) / p.ta.ema20) * 100).toFixed(1) : "0";
+      line += `\n    TA: RSI ${p.ta.rsi.toFixed(1)} (${rsiLabel}) | Price vs EMA20: ${emaDir} (${emaPct}%) | Signal: ${p.ta.signal}`;
+    }
+    return line;
   }).join("\n\n");
 
   return `=== AVAILABLE POOLS (${pools.length}) ===
