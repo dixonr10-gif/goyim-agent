@@ -283,7 +283,7 @@ export async function runHunter() {
     const taCandidates = availablePools.slice(0, 10);
     await Promise.all(taCandidates.map(async (pool) => {
       try {
-        const candles = await getCandles(pool.address);
+        const candles = await getCandles(pool.address, pool.dexPair ?? null);
         if (candles) {
           const ta = getTASignal(candles);
           taMap.set(pool.address, ta);
@@ -538,7 +538,8 @@ export async function runHunter() {
               let ta = taMap.get(pool.address);
               if (!ta) {
                 try {
-                  const candles = await getCandles(pool.address);
+                  const rawPoolData = nonBlacklisted.find(p => p.address === pool.address);
+                  const candles = await getCandles(pool.address, rawPoolData?.dexPair ?? null);
                   if (candles) ta = getTASignal(candles);
                   else console.log(`  ⚠️ TA: No candle data for ${pool.name}, skipping TA filter`);
                 } catch {}

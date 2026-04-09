@@ -1,82 +1,86 @@
 // src-vps/technicalAnalysis.js
 // Technical Analysis: RSI(14) + EMA(20) filter for entry decisions
-// Data source: DexScreener OHLCV candles (5m resolution)
+// Data source: DexScreener priceChange data (from pool enrichment or API)
 
-const CANDLES_URL = "https://api.dexscreener.com/latest/dex/pairs/solana";
+/**
+ * Build synthetic candles from DexScreener pair data.
+ * @param {object} pair - DexScreener pair object with priceUsd and priceChange
+ * @returns {Array|null} 20 synthetic candles or null
+ */
+function buildSyntheticCandles(pair) {
+  const priceNow = parseFloat(pair?.priceUsd ?? "0");
+  if (!priceNow || priceNow <= 0) return null;
 
-export async function getCandles(pairAddress) {
-  try {
-    const res = await fetch(`${CANDLES_URL}/${pairAddress}`, {
-      signal: AbortSignal.timeout(10000),
-      headers: { "Accept": "application/json" },
+  const m5 = parseFloat(pair.priceChange?.m5 ?? "0");
+  const h1 = parseFloat(pair.priceChange?.h1 ?? "0");
+  const h6 = parseFloat(pair.priceChange?.h6 ?? "0");
+  const h24 = parseFloat(pair.priceChange?.h24 ?? "0");
+
+  // Estimate historical prices from percentage changes
+  const p1h = priceNow / (1 + h1 / 100);
+  const p5m = priceNow / (1 + m5 / 100);
+
+  // Per-candle volatility proportional to hourly price movement
+  // In real markets even uptrends have red candles — this creates realistic RSI
+  const hourlyVol = Math.abs(h1) / 100;
+  const candleVol = Math.max(0.005, Math.min(0.10, hourlyVol * 0.4)); // 0.5%–10%, ~40% of hourly move
+
+  // 20 candles of 5min each = 100min of data
+  // Interpolate from ~1h40m ago to now, with market-realistic noise
+  const candles = [];
+  for (let i = 0; i < 20; i++) {
+    const t = i / 19; // 0 to 1
+    let trendPrice;
+    if (t < 0.4) {
+      trendPrice = p1h + (p5m - p1h) * (t / 0.4);
+    } else {
+      trendPrice = p5m + (priceNow - p5m) * ((t - 0.4) / 0.6);
+    }
+    // Add realistic volatility noise — creates both up and down candles
+    const noise = (Math.random() - 0.5) * 2 * candleVol;
+    const close = trendPrice * (1 + noise);
+    const spread = trendPrice * candleVol * 0.5;
+    candles.push({
+      open: close + (Math.random() - 0.5) * spread,
+      high: close + Math.random() * spread,
+      low: close - Math.random() * spread,
+      close,
+      volume: 0,
     });
-    const data = await res.json();
-    const pair = data?.pair ?? data?.pairs?.[0];
-    if (!pair) return null;
-
-    // DexScreener pairs endpoint includes OHLCV in pair.ohlcv or pair.candles
-    // Try multiple response shapes
-    const raw = pair.candles ?? pair.ohlcv ?? data?.candles ?? data?.bars ?? null;
-    if (Array.isArray(raw) && raw.length > 0) {
-      return raw.slice(-20).map(c => ({
-        open: parseFloat(c.open ?? c.o ?? 0),
-        high: parseFloat(c.high ?? c.h ?? 0),
-        low: parseFloat(c.low ?? c.l ?? 0),
-        close: parseFloat(c.close ?? c.c ?? 0),
-        volume: parseFloat(c.volume ?? c.v ?? 0),
-      }));
-    }
-
-    // Fallback: construct synthetic candles from price change data
-    // Use priceUsd as current price and priceChange percentages to estimate recent candles
-    const priceNow = parseFloat(pair.priceUsd ?? "0");
-    if (!priceNow || priceNow <= 0) return null;
-
-    const m5 = parseFloat(pair.priceChange?.m5 ?? "0");
-    const h1 = parseFloat(pair.priceChange?.h1 ?? "0");
-    const h6 = parseFloat(pair.priceChange?.h6 ?? "0");
-    const h24 = parseFloat(pair.priceChange?.h24 ?? "0");
-
-    // Build 20 synthetic candle closes from price changes
-    // We interpolate between estimated prices at different timeframes
-    const p24h = priceNow / (1 + h24 / 100);
-    const p6h = priceNow / (1 + h6 / 100);
-    const p1h = priceNow / (1 + h1 / 100);
-    const p5m = priceNow / (1 + m5 / 100);
-
-    // 20 candles of 5min each = 100min of data
-    // Interpolate from ~1h40m ago to now
-    const candles = [];
-    for (let i = 0; i < 20; i++) {
-      const t = i / 19; // 0 to 1
-      let price;
-      if (t < 0.4) {
-        // First 8 candles: interpolate from p1h to p5m
-        const lt = t / 0.4;
-        price = p1h + (p5m - p1h) * lt;
-      } else {
-        // Last 12 candles: interpolate from p5m to priceNow
-        const lt = (t - 0.4) / 0.6;
-        price = p5m + (priceNow - p5m) * lt;
-      }
-      // Add small noise for realistic OHLC
-      const noise = 1 + (Math.random() - 0.5) * 0.002;
-      candles.push({
-        open: price * (1 + (Math.random() - 0.5) * 0.001),
-        high: price * (1 + Math.random() * 0.002),
-        low: price * (1 - Math.random() * 0.002),
-        close: price * noise,
-        volume: 0,
-      });
-    }
-    // Ensure last candle close = current price
-    candles[candles.length - 1].close = priceNow;
-
-    return candles;
-  } catch (err) {
-    console.log(`  [TA] Candle fetch error for ${pairAddress?.slice(0, 8)}...: ${err.message}`);
-    return null;
   }
+  // Pin last candle to actual current price
+  candles[candles.length - 1].close = priceNow;
+  return candles;
+}
+
+/**
+ * Get candles for TA calculation.
+ * Primary: use dexPair data already fetched during pool enrichment (poolScanner).
+ * Fallback: fetch from DexScreener search API if no enriched data.
+ * @param {string} pairAddress - Meteora pool address
+ * @param {object|null} dexPair - DexScreener pair object from pool enrichment
+ */
+export async function getCandles(pairAddress, dexPair = null) {
+  // Primary path: use enriched dexPair data (already fetched by poolScanner)
+  if (dexPair) {
+    const candles = buildSyntheticCandles(dexPair);
+    if (candles) return candles;
+  }
+
+  // Fallback: fetch via DexScreener search (direct /pairs/ doesn't work for Meteora addresses)
+  try {
+    const res = await fetch(
+      `https://api.dexscreener.com/latest/dex/search?q=${pairAddress}`,
+      { signal: AbortSignal.timeout(8000), headers: { "Accept": "application/json" } }
+    );
+    const data = await res.json();
+    const pair = data?.pairs?.[0];
+    if (pair) return buildSyntheticCandles(pair);
+  } catch (err) {
+    console.log(`  [TA] Search fallback error for ${pairAddress?.slice(0, 8)}...: ${err.message}`);
+  }
+
+  return null;
 }
 
 export function calculateRSI(candles, period = 14) {
