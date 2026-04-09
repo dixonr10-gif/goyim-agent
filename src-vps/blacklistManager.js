@@ -93,16 +93,40 @@ export function getTokenLossesWithDates() {
   return loadLosses();
 }
 
-export function manualBlacklist(symbol) {
+export async function manualBlacklist(symbol) {
+  let input = symbol;
+
+  // Detect CA address (base58, 32-44 chars) and resolve to symbol via DexScreener
+  const CA_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  if (CA_REGEX.test(input)) {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${input}`, { signal: AbortSignal.timeout(8000) });
+      const data = await res.json();
+      const pair = data?.pairs?.[0];
+      if (pair?.baseToken?.symbol) {
+        const resolved = pair.baseToken.symbol.toUpperCase();
+        console.log(`[Blacklist] CA resolved: ${input.slice(0, 8)}... → ${resolved}`);
+        input = resolved;
+      } else {
+        console.log(`[Blacklist] CA ${input.slice(0, 8)}... could not be resolved — no DexScreener pair found`);
+        return `CA ${input.slice(0, 8)}... (unresolved)`;
+      }
+    } catch (err) {
+      console.log(`[Blacklist] CA resolution failed: ${err.message}`);
+      return `CA ${input.slice(0, 8)}... (resolution error)`;
+    }
+  }
+
   // Extract token symbols — handles both "STONKS" and "stonks-SOL" inputs
-  const syms = extractSymbols(symbol).filter(s => !QUOTE_TOKENS.has(s));
-  if (syms.length === 0) return symbol.toUpperCase();
+  const syms = extractSymbols(input).filter(s => !QUOTE_TOKENS.has(s));
+  if (syms.length === 0) return input.toUpperCase();
   const losses = loadLosses();
   for (const sym of syms) {
     const prev = losses[sym]?.count ?? 0;
-    losses[sym] = { count: Math.max(prev, 3), blacklistedAt: losses[sym]?.blacklistedAt ?? new Date().toISOString() };
+    losses[sym] = { count: Math.max(prev, AUTO_BL_THRESHOLD), blacklistedAt: losses[sym]?.blacklistedAt ?? new Date().toISOString() };
   }
   saveLosses(losses);
+  console.log(`[Blacklist] Manual blacklist: ${syms.join(", ")} (count set to ${AUTO_BL_THRESHOLD})`);
   return syms.join(", ");
 }
 

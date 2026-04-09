@@ -330,7 +330,7 @@ function registerCommands() {
             await ctx.reply(`🔍 CA resolved: ${symbol}`);
           } catch { await ctx.reply(`⚠️ Cannot resolve CA, using ${symbol}`); }
         }
-        const result = manualBlacklist(symbol);
+        const result = await manualBlacklist(symbol);
         await ctx.reply(`✅ ${result} ditambahkan ke blacklist`);
         return;
       }
