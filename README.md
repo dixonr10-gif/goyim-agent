@@ -9,9 +9,17 @@ AI-powered autonomous liquidity provision agent for **Meteora DLMM** on Solana. 
 - **Dual-Agent Architecture** — Hunter scans & opens, Healer monitors & closes
 - **LLM-Powered Decisions** — Claude/GPT analyzes pool data, decides entry/exit with confidence scoring
 - **Dynamic Position Sizing** — Weighted scoring (fee/TVL, volume trend, momentum, opportunity) determines SOL per trade
-- **Trailing Take-Profit** — Locks in gains with configurable activation & trail percentages
-- **Dynamic Bin Count** — Auto-adjusts bin range based on 1h price volatility
-- **Pool Memory** — Tracks win rate per pool, avoids repeat losers, boosts proven winners
+- **Trailing Take-Profit with HWM** — Activates at +6% PnL, tracks high-water mark, closes if PnL drops 3% from peak
+- **Dynamic Bin Count** — Auto-adjusts 50 / 70 / 90 / 110 bins based on 1h price volatility (low → narrow, high → wide)
+- **RSI Filter** — Skips pools where RSI > 80 (overbought / dump risk) or RSI < 30 (oversold / falling knife) before opening
+- **Pool Memory** — Per-pool win rate tracking with bonus/penalty scoring; avoids repeat losers, boosts proven winners
+- **Strict Hours Mode (14-18 WIB)** — Tighter SL (-4%), TP (+4%), trailing trail (-2%), higher min volume ($200k), shorter max hold (2h), and 2h auto-cooldown after any loss in window
+- **LPAgent PnL Integration** — Accurate USD-precise PnL including unclaimed + claimed fees, replacing approximation-based PnL
+- **Blacklist Auto-Decay** — Temporary blacklisted tokens auto-expire after 7 days (permanent blacklist preserved)
+- **Meridian-style Lessons** — Per-trade observation captured (max 20 retained), surfaced to LLM via prompt context
+- **Exit Reason + Bin Range Tracking** — Every closed trade records `exitReason` (sl/tp/trailing/oor/feeTP/maxHold/feeAPR) and final `binRange` for post-mortem analysis
+- **BidAsk Strategy** — Bin range 40% below / 60% above active bin, biased for upside capture
+- **Spot Strategy** — Symmetrical range with 10% upside buffer for trending pools
 - **Organic Score Filter** — Detects wash trading / bot spikes, only enters organic pools
 - **Self-Learning System** — Post-trade LLM debrief, pattern discovery, auto-rewriting agent brain
 - **Threshold Evolution** — Auto-adjusts filter thresholds based on win rate & avg PnL
@@ -26,7 +34,7 @@ AI-powered autonomous liquidity provision agent for **Meteora DLMM** on Solana. 
 - **Watchdog** — Auto-restarts Healer if it becomes unresponsive
 - **Daily P&L Report** — Automated daily performance summary via Telegram
 - **Cooldown System** — Per-token cooldown after close/failure to avoid re-entering too fast
-- **Blacklist Management** — Permanent + temporary token blacklisting
+- **Blacklist Management** — Permanent + temporary token blacklisting (with 7-day auto-decay)
 
 ---
 
@@ -179,6 +187,7 @@ Semua konfigurasi ada di file `.env`. Copy dari `.env.example` dan sesuaikan.
 | `RPC_URL` | Solana RPC endpoint (Helius recommended) |
 | `WALLET_PRIVATE_KEY` | Base58 private key wallet Solana |
 | `OPENROUTER_API_KEY` | API key dari OpenRouter |
+| `LPAGENT_API_KEY` | API key dari LPAgent (untuk akurat USD-precise PnL termasuk fees) |
 
 ### Trading Parameters
 
@@ -195,11 +204,21 @@ Semua konfigurasi ada di file `.env`. Copy dari `.env.example` dan sesuaikan.
 |---|---|---|
 | `TAKE_PROFIT_PERCENT` | `8` | Take profit at +8% PnL |
 | `STOP_LOSS_PCT` | `-6` | Stop loss at -6% PnL |
-| `TRAILING_TP_ACTIVATION` | `6` | Trailing TP aktif setelah +6% |
-| `TRAILING_TP_TRAIL` | `3` | Trail 3% dari peak PnL |
+| `TRAILING_TP_ACTIVATION` | `6` | Trailing TP aktif setelah +6% PnL (mulai track HWM) |
+| `TRAILING_TP_TRAIL` | `3` | Trail 3% dari peak PnL — close jika PnL turun 3% dari HWM |
 | `TAKE_PROFIT_FEE_PCT` | `0.15` | Fee TP: close jika fees >= 15% of deployed SOL |
 | `MIN_FEE_APR_TO_HOLD` | `10` | Minimum fee APR untuk tetap hold (%) |
 | `OOR_WAIT_MINUTES` | `30` | Grace period setelah out-of-range (menit) |
+| `SKIP_PUMP_1H_THRESHOLD` | `30` | Skip pool jika token sudah pump > 30% dalam 1 jam (anti-FOMO entry) |
+
+### Strict Hours Mode
+
+Periode strict hours mengaktifkan filter trading yang lebih ketat untuk menghindari volatilitas tinggi. Default 14:00–18:00 WIB. Saat aktif: SL -4%, TP +4%, trailing trail -2%, min volume $200k, max hold 2h, dan auto-cooldown 2 jam jika ada loss di window ini.
+
+| Variable | Default | Deskripsi |
+|---|---|---|
+| `STRICT_HOURS_START` | `14` | Jam mulai strict mode (WIB, 0-23) |
+| `STRICT_HOURS_END` | `18` | Jam selesai strict mode (WIB, 0-23) |
 
 ### Pool Filters
 
@@ -301,22 +320,29 @@ Semua konfigurasi ada di file `.env`. Copy dari `.env.example` dan sesuaikan.
                     index.js (Orchestrator)
                    /                       \
           Hunter Agent                 Healer Agent
-        (every 18 min)               (every 2 min)
+        (every 30 min)               (every 2 min)
               |                            |
     1. Learn (brain/patterns)    1. Sync on-chain positions
-    2. Scan 3 sources:           2. Calculate real-time PnL
-       - Meteora API (vol+fees)  3. Check exit rules:
-       - DexScreener trending       - Out of Range (OOR)
-       - Meteora fee/TVL ratio      - Fee Take Profit
-    3. Filter & enrich              - Stop Loss
-    4. Analyze (scoring)            - Take Profit
-    5. LLM decision                 - Trailing TP
-    6. Token safety check           - Max Hold Time
-    7. Execute open                 - Fee APR Floor
-                                 4. Execute close
-                                 5. Auto-swap tokens
-                                 6. Record & learn
+    2. Scan 80+ pools (3 src):   2. Calculate real-time PnL
+       - Meteora API (vol+fees)     (LPAgent USD-precise)
+       - DexScreener trending    3. Check exit rules:
+       - Meteora fee/TVL ratio      - Stop Loss (-6% / -4% strict)
+    3. Filter & enrich              - Take Profit (+8% / +4% strict)
+    4. Analyze (scoring 0-100)      - Out of Range (OOR + grace)
+    5. RSI filter                   - Trailing TP HWM update
+       (skip RSI > 80 or < 30)        (activate +6%, trail -3%)
+    6. LLM decision                 - Fee Take Profit
+    7. Pool Memory check            - Max Hold Time
+       (per-pool win rate)          - Fee APR Floor
+    8. Token safety + bundler    4. Execute close
+    9. Execute open              5. Auto-swap leftover tokens
+                                 6. Record exitReason + binRange
+                                 7. Post-trade lessons (Meridian)
 ```
+
+**Hunter flow (30 min loop):** scan 80+ pools → pre-filter (vol/TVL/APR/age) → DexScreener enrich (organic score, multi-timeframe trend) → market analysis (score 0-100) → **RSI filter** (skip > 80 / < 30) → LLM decision with full context → **Pool Memory check** (skip if loss streak ≥ 2x on same pool) → token safety + MEV/bundler check → dynamic position sizing → **open position**.
+
+**Healer flow (2 min loop):** sync on-chain state → fetch USD-precise PnL via LPAgent (includes unclaimed + claimed fees) → evaluate exit rules in priority order (SL → TP → OOR → fee TP → trailing HWM update → max hold → fee APR floor) → if any triggers, **close position** + auto-swap residual tokens → record `exitReason` + final `binRange` → post-trade LLM debrief.
 
 ### Hunter Agent — Entry Logic
 
@@ -431,11 +457,52 @@ pm2 logs goyim-agent --lines 50    # Cek error
 pm2 restart goyim-agent            # Restart
 ```
 
+### Hunter STALE warning (saat strict hours 14-18 WIB)
+**Normal behavior** — Hunter di-pause 2 jam setelah loss di strict hours window. Cek logs:
+```bash
+pm2 logs goyim-agent --lines 50 | grep "Strict loss cooldown"
+# Output: "[Hunter] ⏰ Strict loss cooldown: Xm remaining (resume HH:MM WIB)"
+```
+Cooldown ter-persist di `data/strict_cooldown.json` dan akan auto-restore setelah restart. Tidak perlu intervensi — Hunter akan resume otomatis.
+
+### Bot tidak open posisi sama sekali
+Cek beberapa hal:
+- **Blacklist** — `/blacklist` di Telegram, lihat token-token yang ke-block
+- **Brain paralysis** — kalau win rate < 30%, brain mungkin terlalu konservatif. Cek `data/agent_brain.json`
+- **Strict cooldown aktif** — lihat troubleshooting di atas
+- **Pool Memory loss streak** — pool yang sudah 2x loss berturut akan di-skip 24 jam
+- **RSI filter** — semua kandidat mungkin overbought (RSI > 80) atau oversold (< 30)
+
+### PnL selalu N/A di /positions
+File `lastPnlPct` tidak ke-persist (bug race condition):
+```bash
+pm2 restart goyim-agent
+```
+Setelah restart, tunggu 1 cycle Healer (~2 menit), lalu cek `/positions` lagi.
+
+### Swap failed: 429 Too Many Requests
+RPC rate limit. Bot akan auto-retry dengan slippage berbeda (100/300/500/1000bps). Kalau persistent:
+- Upgrade Helius plan ke paid tier
+- Atau ganti ke RPC alternative (QuickNode, Triton)
+
 ### Healer STALE warning
 Watchdog akan auto-restart, tapi jika terus muncul:
 ```bash
 pm2 restart goyim-agent
 ```
+
+### Position OOR langsung setelah open
+**Normal** — grace period berbeda berdasarkan arah:
+- **OOR ke kanan** (token pump, bin di bawah active) → grace **35 menit** (kasih waktu fee accumulation)
+- **OOR ke kiri** (token dump, bin di atas active) → grace **15 menit** (cut loss cepat)
+
+Kalau mau force close, gunakan `/closeall` atau close manual via Meteora UI.
+
+### Transaction simulation failed
+Beberapa kemungkinan:
+- **Pool deprecated/migrated** — token mungkin sudah pindah ke pool baru, bot akan auto-blacklist
+- **SOL kurang** untuk gas fee (minimum ~0.05 SOL untuk close transaction)
+- **Bin range corrupted** — close manual via Meteora UI, lalu `/recordclose SYMBOL PNL_% SOL_AMOUNT`
 
 ### RPC rate limit (429 errors)
 - Ganti ke Helius RPC (free tier: 30 req/s)
