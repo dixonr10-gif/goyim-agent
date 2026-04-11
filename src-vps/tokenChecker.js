@@ -134,7 +134,11 @@ export async function checkTokenViability(poolAddress, tokenMint) {
 
       // ─── Hard-reject thresholds (from .env) ───────────────────
       const MIN_AGE_MS  = (parseFloat(process.env.MIN_TOKEN_AGE_HOURS) || 1) * 3_600_000;
-      const MIN_VOL     = parseFloat(process.env.MIN_VOLUME_24H)   || 100_000;
+      let MIN_VOL       = parseFloat(process.env.MIN_VOLUME_24H)   || 100_000;
+      try {
+        const { isStrictHours } = await import("./timeHelper.js");
+        if (isStrictHours()) MIN_VOL = Math.max(MIN_VOL, 200_000);
+      } catch {}
       const MIN_LIQ     = parseFloat(process.env.MIN_LIQUIDITY_USD) || 15_000;
       const MAX_LIQ     = parseFloat(process.env.MAX_LIQUIDITY_USD) || 1_000_000;
 

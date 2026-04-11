@@ -14,8 +14,30 @@ const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const JUP_QUOTE_URL = "https://public.jupiterapi.com/quote";
 const JUP_SWAP_URL  = "https://public.jupiterapi.com/swap";
 
+import fs from "fs";
+import path from "path";
+
 const AUTO_SWAP_ENABLED = process.env.AUTO_SWAP_ENABLED !== "false";
 const AUTO_SWAP_MIN_USD = Number(process.env.AUTO_SWAP_MIN_USD) || 1;
+const PENDING_SWAPS_FILE = path.resolve("data/pending_swaps.json");
+
+function loadPendingSwaps() {
+  try { return JSON.parse(fs.readFileSync(PENDING_SWAPS_FILE, "utf-8")); } catch { return []; }
+}
+function savePendingSwaps(swaps) {
+  try { fs.mkdirSync(path.dirname(PENDING_SWAPS_FILE), { recursive: true }); fs.writeFileSync(PENDING_SWAPS_FILE, JSON.stringify(swaps, null, 2)); } catch {}
+}
+function addPendingSwap(tokenMint, amount, usdValue) {
+  const pending = loadPendingSwaps();
+  // Don't duplicate
+  if (pending.some(s => s.tokenMint === tokenMint)) return;
+  pending.push({ tokenMint, amount, usdValue, failedAt: new Date().toISOString(), retries: 0 });
+  savePendingSwaps(pending);
+}
+function removePendingSwap(tokenMint) {
+  const pending = loadPendingSwaps().filter(s => s.tokenMint !== tokenMint);
+  savePendingSwaps(pending);
+}
 
 async function fetchDexScreenerPrice(mint) {
   try {
@@ -56,32 +78,53 @@ async function estimateUsdViaJupiterQuote(mint, rawAmount, uiAmount) {
   }
 }
 
+async function fetchWithRateRetry(fn, label = "Jupiter") {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const is429 = err.message?.includes("429") || err.message?.includes("Too Many Requests");
+      if (is429 && attempt < 3) {
+        const wait = 3000 * attempt;
+        console.log(`  [${label}] 429 rate limited — retry ${attempt}/3 in ${wait / 1000}s`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function getJupiterQuote(inputMint, amount, slippageBps = 100) {
-  const url = `${JUP_QUOTE_URL}?inputMint=${inputMint}&outputMint=${WSOL}&amount=${amount}&slippageBps=${slippageBps}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`Jupiter quote failed: ${res.status} ${await res.text()}`);
-  const quote = await res.json();
-  if (quote.error) throw new Error(`Jupiter quote error: ${quote.error}`);
-  return quote;
+  return fetchWithRateRetry(async () => {
+    const url = `${JUP_QUOTE_URL}?inputMint=${inputMint}&outputMint=${WSOL}&amount=${amount}&slippageBps=${slippageBps}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`Jupiter quote failed: ${res.status} ${await res.text().catch(() => "")}`);
+    const quote = await res.json();
+    if (quote.error) throw new Error(`Jupiter quote error: ${quote.error}`);
+    return quote;
+  }, "JupQuote");
 }
 
 async function buildJupiterSwapTx(quoteResponse, userPublicKey) {
-  const res = await fetch(JUP_SWAP_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      quoteResponse,
-      userPublicKey,
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: "auto",
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`Jupiter swap build failed: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  if (!data.swapTransaction) throw new Error("Jupiter returned no swapTransaction");
-  return data.swapTransaction;
+  return fetchWithRateRetry(async () => {
+    const res = await fetch(JUP_SWAP_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        quoteResponse,
+        userPublicKey,
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: "auto",
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`Jupiter swap build failed: ${res.status} ${await res.text().catch(() => "")}`);
+    const data = await res.json();
+    if (!data.swapTransaction) throw new Error("Jupiter returned no swapTransaction");
+    return data.swapTransaction;
+  }, "JupSwap");
 }
 
 async function notifyTemp(msg) {
@@ -238,11 +281,38 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
         }
       }
       if (!swapped) {
-        console.log(`[AutoSwap] ${mintShort} failed all slippage tiers → manual swap needed`);
-        await notifyTemp(`⚠️ Auto-swap gagal: ${mintShort} — slippage exceeded\nValue: ~$${token.usdValue.toFixed(2)}`);
+        console.log(`[AutoSwap] ${mintShort} failed all tiers → queued as pending`);
+        addPendingSwap(token.mint, token.amount, token.usdValue);
+        await notifyTemp(`⚠️ Swap pending: ${mintShort} belum ke-swap (~$${token.usdValue.toFixed(2)})\nAkan dicoba lagi di healer cycle berikutnya`);
+      } else {
+        removePendingSwap(token.mint);
       }
     }
   } catch (err) {
     console.error("[autoSwap] Fatal error:", err.message);
   }
+}
+
+export async function retryPendingSwaps(notifyFn = null) {
+  const pending = loadPendingSwaps();
+  if (pending.length === 0) return;
+  console.log(`[PendingSwap] ${pending.length} pending swap(s) to retry`);
+
+  for (const swap of pending) {
+    swap.retries = (swap.retries ?? 0) + 1;
+    if (swap.retries > 5) {
+      console.log(`[PendingSwap] ${swap.tokenMint.slice(0, 8)} exceeded 5 retries — removing`);
+      removePendingSwap(swap.tokenMint);
+      continue;
+    }
+    try {
+      console.log(`[PendingSwap] Retrying ${swap.tokenMint.slice(0, 8)}... (attempt ${swap.retries})`);
+      // Trigger a full autoSwap which will pick up this token if balance > 0
+      await autoSwapTokensToSOL(notifyFn);
+      break; // autoSwap processes all tokens, so one call is enough
+    } catch (err) {
+      console.log(`[PendingSwap] Retry failed: ${err.message?.slice(0, 80)}`);
+    }
+  }
+  savePendingSwaps(pending);
 }

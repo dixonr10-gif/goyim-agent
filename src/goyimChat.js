@@ -95,7 +95,7 @@ async function buildTradingContext() {
 
   try { const p = getOpenPositions(); context += `Open positions: ${p.length}/3\n`; } catch {}
   try { const s = getFullStats()?.stats ?? {}; context += `Trades: ${s.totalTrades ?? 0} | WR: ${s.hitRate ?? 0}% | PnL: ${s.totalPnlSol ?? 0} SOL\n`; } catch {}
-  try { const b = loadBrain(); context += `Brain v${b.version}: ${(b.selfWrittenRules ?? []).slice(0, 2).join(" | ")}\n`; } catch {}
+  try { const b = loadBrain(); context += `Brain v${b.version} | ${b.totalTrades ?? 0} trades | ${b.winRate ?? 0}% win rate\n`; } catch {}
 
   try {
     const tops = await getTopCryptos(10);
@@ -165,13 +165,11 @@ function buildReviewContext() {
     }
   } catch(e) { ctx += `Trade stats error: ${e.message}\n`; }
 
-  // Brain
+  // Brain (stats only — lessons are in agent_lessons.json)
   try {
     const brain = loadBrain();
-    ctx += `\n=== AGENT BRAIN v${brain.version ?? "?"} ===\n`;
-    ctx += `Last reflection: ${brain.latestReflection ?? "none"}\n`;
-    if ((brain.selfWrittenRules ?? []).length > 0) ctx += `Rules: ${brain.selfWrittenRules.slice(0,3).join(" | ")}\n`;
-    if ((brain.redFlags ?? []).length > 0) ctx += `Red flags: ${brain.redFlags.slice(0,3).join(" | ")}\n`;
+    ctx += `\n=== AGENT BRAIN v${brain.version ?? 0} ===\n`;
+    ctx += `Trades: ${brain.totalTrades ?? 0} | Win rate: ${brain.winRate ?? 0}%\n`;
   } catch(e) { ctx += `Brain error: ${e.message}\n`; }
 
   return ctx;

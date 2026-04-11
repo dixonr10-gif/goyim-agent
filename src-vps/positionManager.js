@@ -305,7 +305,7 @@ export async function openPosition(decision) {
   }
 }
 
-export async function closePosition(positionId) {
+export async function closePosition(positionId, closeMeta = {}) {
   const pos = openPositions.get(positionId);
   if (!pos) {
     console.log(`[Close] ${positionId} not in local state — already removed`);
@@ -329,12 +329,13 @@ export async function closePosition(positionId) {
 
     if (!pos.positionAddress) throw new Error(`No positionAddress for ${positionId} — cannot close`);
 
-    // Helper: set cooldown for closed token
+    // Helper: set cooldown for closed token using the provided reason+pnl so
+    // cooldownManager can pick the right per-reason duration.
     const _setCooldownForPos = async (p) => {
       try {
         const { extractTokenSymbol, setCooldown } = await import("./cooldownManager.js");
         const symbol = extractTokenSymbol(p.poolName);
-        if (symbol) setCooldown(symbol);
+        if (symbol) setCooldown(symbol, { reason: closeMeta.reason ?? null, pnlPct: closeMeta.pnlPct ?? null });
       } catch {}
     };
 
@@ -443,12 +444,8 @@ export async function closePosition(positionId) {
       }
     }
 
-    // Set cooldown so agent won't re-enter same token for COOLDOWN_HOURS
-    try {
-      const { extractTokenSymbol, setCooldown } = await import("./cooldownManager.js");
-      const symbol = extractTokenSymbol(pos.poolName);
-      if (symbol) setCooldown(symbol);
-    } catch {}
+    // Set cooldown using the reason+pnl the caller passed in.
+    await _setCooldownForPos(pos);
 
     openPositions.delete(positionId);
     savePositions(openPositions);
@@ -810,7 +807,7 @@ export async function rebalancePosition(positionId) {
   // Save pos data before close deletes it
   const posData = { ...pos };
   console.log(`🔄 Rebalancing ${positionId} (pool: ${pos.pool?.slice(0, 8)}...)...`);
-  const closeResult = await closePosition(positionId);
+  const closeResult = await closePosition(positionId, { reason: "REBALANCE" });
   // Use actual SOL received from close as the new deposit amount
   const solReceived = closeResult?.solReceived ?? posData.solDeployed ?? config.maxSolPerPosition;
   console.log(`  [Rebalance] solReceived=${solReceived.toFixed?.(4) ?? solReceived} → re-opening with this amount`);

@@ -3,7 +3,6 @@ import fs from "fs";
 import path from "path";
 import { getOpenPositions } from "./positionManager.js";
 import { getFullStats } from "./tradeMemory.js";
-import { loadBrain } from "./selfImprovingPrompt.js";
 import { getTopCryptos, formatPriceEntry } from "./cryptoPrice.js";
 import { getSOLBalance, getWalletAddress, getSolPriceUSD, getUsdToIdrRate } from "./walletInfo.js";
 import { getLastCandidates } from "./poolScanner.js";
@@ -12,25 +11,45 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MEMORY_FILE = path.resolve("data/chat_memory.json");
 const MAX_REPLY_CHARS = 4000;
 
+// NOTE: this function is ONLY ever called on LLM-generated output (assistant
+// messages), never on user input. It catches degenerate LLM responses (real
+// token loops) without false-flagging legitimate technical answers that
+// repeat trading terms like "TP", "SL", "Hunter" many times.
 function sanitizeResponse(text) {
   if (!text) return text;
-  // Detect repetitive word loops
   const words = text.split(/\s+/);
-  if (words.length > 20) {
-    const freq = {};
-    for (const w of words) { const lw = w.toLowerCase(); freq[lw] = (freq[lw] ?? 0) + 1; }
-    const maxRepeat = Math.max(...Object.values(freq));
-    if (maxRepeat > 10) {
-      const loopWord = Object.entries(freq).find(([, c]) => c > 10)?.[0] ?? "?";
-      console.error(`[CHAT] Loop detected: "${loopWord}" repeated ${maxRepeat}x — blocking response`);
-      return "[Error: response loop detected]";
+
+  // Check 1: same word repeated 6+ times CONSECUTIVELY → real loop
+  // (e.g. "the the the the the the the" — what broken LLM output looks like)
+  // Skip single-char tokens like "-", "*", "•", "—" which are bullet/dash markers
+  // in markdown lists and don't represent loops.
+  let runWord = null, runLen = 0, maxRun = 0, loopWord = null;
+  for (const w of words) {
+    if (w.length < 2) continue;
+    const lw = w.toLowerCase();
+    if (lw === runWord) {
+      runLen++;
+      if (runLen > maxRun) { maxRun = runLen; loopWord = lw; }
+    } else {
+      runWord = lw;
+      runLen = 1;
     }
-    const unique = new Set(words);
-    if (unique.size < words.length * 0.3) {
-      console.error(`[CHAT] Low diversity detected: ${unique.size}/${words.length} unique words — blocking response`);
+  }
+  if (maxRun >= 6) {
+    console.error(`[CHAT] Loop detected: word "${loopWord}" repeated ${maxRun}x consecutively — blocking response`);
+    return "[Error: response loop detected]";
+  }
+
+  // Check 2: extremely low vocabulary diversity on long replies → degenerate output
+  // (was 30% which false-flagged technical answers; lowered to 10% on 50+ words)
+  if (words.length > 50) {
+    const unique = new Set(words.map(w => w.toLowerCase()));
+    if (unique.size < words.length * 0.10) {
+      console.error(`[CHAT] Low diversity: ${unique.size}/${words.length} unique words — blocking response`);
       return "[Error: response loop detected]";
     }
   }
+
   // Truncate if too long
   if (text.length > MAX_REPLY_CHARS) {
     text = text.slice(0, MAX_REPLY_CHARS) + "...";
@@ -47,27 +66,61 @@ IDENTITAS: Kamu adalah BOT, bukan trader manusia. Wallet, SOL, dan semua posisi 
 - Bilang "posisi yang gua buka untuk lo" BUKAN "posisi gua"
 - Bilang "wallet lo" BUKAN "wallet gua"
 - Bilang "SOL lo" BUKAN "SOL gua"
-- Kalau ditanya kenapa deploy X SOL → jelaskan scoring formula: fee/TVL, volume, momentum, opportunity score
 
-CARA KERJA:
-- Hunter scan 300+ pools tiap 15 menit, filter, scoring weighted (fee 20%, volume 35%, momentum 20%, other 25%), LLM decide
-- Position sizing: score >= 80 → 5 SOL, >= 70 → 4, >= 60 → 3, >= 50 → 2, >= 40 → 1
-- Healer monitor tiap 2 menit, exit rules: SL -6%, TP trailing dari +8%, OOR smart (kanan 60m, kiri 15m), max hold 4h
-- Kamu yang DECIDE open/close — jangan bilang "terserah lo" atau "gua cuma eksekutor"
+---TECHNICAL KNOWLEDGE---
+Architecture:
+- Hunter Agent: scan pools every 30 min, select best pool via LLM scoring
+- Healer Agent: monitor positions every 2 min, handle SL/TP/OOR
+- Scoring: fee/TVL 20%, volume 35%, momentum 20%, opportunity 25%
 
-Saat user tanya kenapa tidak open pool/token → jelaskan reasoning teknikal dari scan data di context.
+Key Features:
+- Trailing TP: activates at +6%, trail -3%
+- Stop Loss: -6%
+- Dynamic bins: 50/70/90/110 based on 1h volatility
+- Spot strategy: 10% upside buffer
+- BidAsk strategy: 40% below, 60% above active bin
+- RSI filter: skip if RSI > 80 or < 30
+- Strict hours 14-18 WIB: tighter SL/TP/volume
+- Pool Memory: track per-pool win rate, bonus/penalty
+- Blacklist: auto after 5 losses, decay 7 days
+- EVOLVE: auto-adjust MIN_POOL_FEE_APR & MIN_POOL_VOLUME
+- LPAgent: PnL data source (accurate, fees included)
 
-Personality: opportunistic profit-maximalist, confident, direct, brutally honest.
-Slang: alpha, ape in, rekt, ngmi, wagmi, degen, LP, bin range.
-Language: Indonesian-English mix. Reply in same language as user.
-Keep replies SHORT and punchy — max 3-4 sentences unless asked for detail.
+Common Issues & Solutions:
+- Hunter STALE → strict hours cooldown aktif (normal)
+- Bot tidak open posisi → cek blacklist/brain paralysis
+- PnL N/A → tunggu healer cycle 2 menit
+- Swap failed → RPC 429, retry otomatis
+- OOR langsung → grace period 35m (kanan) 15m (kiri)
+
+VPS Info:
+- IP: 152.42.167.126
+- Deploy: node scripts/deploy.cjs
+- Logs: pm2 logs goyim-agent --lines 50
+- Restart: pm2 restart goyim-agent
+---END TECHNICAL KNOWLEDGE---
+
+BAHASA & GAYA KOMUNIKASI:
+- Jawab SELALU dalam bahasa Indonesia casual
+- Campur istilah trading/crypto dalam English (LP, bin range, SL, TP, OOR, fee APR, dll)
+- Panggil user "bro"
+- Gaya seperti teman trader yang paham teknikal
+- Santai tapi informatif, tidak formal
+- Kalau ada error → jelasin root cause dulu, baru kasih solusi
+- Kalau tidak tau → "gua kurang tau bro, tanya Claude.ai untuk analisis lebih dalam"
+
+CARA JAWAB:
+- Mulai dengan diagnosis singkat
+- Jelasin root cause
+- Kasih solusi step by step
+- Pakai emoji relevan
+- Maksimal 5-6 kalimat, tidak bertele-tele
 
 COMMANDS: Kalau user mention "cooldown", "blacklist", "watchlist", "status", "positions" tanpa slash → arahkan ke /command yang benar.
 
 WALLET: Address 8uGZkrvfRJZWFVYXCCFc9WnGGU13McrWNwiU26QCWk4U — ini wallet DIXON, share freely.
 POSITIONS: Gunakan HANYA data dari trading context. NEVER invent positions.
 POOL NAMES: Jangan karang nama pool.
-
 TRADE HISTORY: Jawab soal performance berdasarkan ACTUAL closed trades di context, BUKAN scan candidates.
 WALLET BALANCE: Gunakan data WALLET BALANCE (REALTIME) di context untuk jawab saldo/balance.
 CRYPTO PRICES: Gunakan data CRYPTO PRICES di context. Format: '[SYMBOL]: $XX,XXX.XX (24h: +X.XX%)'
@@ -150,7 +203,6 @@ async function buildTradingContext() {
       }
     }
   } catch {}
-  try { const b = loadBrain(); context += `Brain v${b.version}: ${(b.observations ?? []).slice(0, 2).join(" | ")}\n`; } catch {}
 
   // Trade history + stats
   try {
@@ -284,15 +336,6 @@ function buildReviewContext() {
       });
     }
   } catch(e) { ctx += `Trade stats error: ${e.message}\n`; }
-
-  // Brain (observations only)
-  try {
-    const brain = loadBrain();
-    ctx += `\n=== AGENT BRAIN v${brain.version ?? "?"} (observations) ===\n`;
-    const obs = brain.observations ?? [];
-    if (obs.length > 0) ctx += `Observations: ${obs.slice(0,5).join(" | ")}\n`;
-    else ctx += `No observations yet.\n`;
-  } catch(e) { ctx += `Brain error: ${e.message}\n`; }
 
   return ctx;
 }

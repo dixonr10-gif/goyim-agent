@@ -7,7 +7,7 @@ import { recordLastRun } from "./healthCheck.js";
 import { recordTradeClose, getFullStats } from "./tradeMemory.js";
 import { maybeEvolveThresholds } from "./thresholdEvolver.js";
 import { analyzeClosedTrade } from "./postTradeAnalyzer.js";
-import { notifyPositionClosed, notifyError, notifyMessage, isAgentPaused } from "./telegramBot.js";
+import { notifyPositionClosed, notifyError, notifyMessage, isAgentPaused, esc } from "./telegramBot.js";
 import { autoSwapTokensToSOL, retryPendingSwaps } from "./autoSwap.js";
 import { recordTokenLoss, recordOORStrike } from "./blacklistManager.js";
 import { checkAndClaimFees } from "./feeCompounder.js";
@@ -15,7 +15,11 @@ import { recordPoolClose } from "./poolMemory.js";
 
 let healerIteration = 0;
 
-// Emergency PnL check — uses same getPositionValue as healer (usd-precise)
+// Emergency PnL check — uses same getPositionValue as healer (usd-precise).
+// Acts as a redundant safety net in case the main Healer cycle is stalled.
+// Now defers to Healer if Healer already queued an SL close in the last 2 minutes
+// (via the _slHandledAt flag set in exitStrategy.js).
+const SL_HANDOFF_WINDOW_MS = 2 * 60 * 1000;
 export async function runEmergencyPriceCheck() {
   try {
     const openPos = getOpenPositions();
@@ -23,6 +27,15 @@ export async function runEmergencyPriceCheck() {
 
     for (const pos of openPos) {
       try {
+        // Skip if Healer already queued this position for SL close in current 2-min window.
+        // Prevents double-close race: Healer fires SL → submits TX → emergency check sees
+        // PnL still ≤-15% (TX not confirmed yet) → would re-fire close on the same position.
+        if (pos._slHandledAt && Date.now() - pos._slHandledAt < SL_HANDOFF_WINDOW_MS) {
+          const ageS = ((Date.now() - pos._slHandledAt) / 1000).toFixed(0);
+          console.log(`  [EmergencyExit] ${pos.poolName ?? pos.id}: Healer already handling SL (${ageS}s ago) — skipping`);
+          continue;
+        }
+
         const currentValue = await getPositionValue(pos);
         if (pos._badData || pos._positionGone) continue;
         const solPrice = pos._solPriceNow ?? 0;
@@ -36,13 +49,18 @@ export async function runEmergencyPriceCheck() {
         if (pnlPct <= -15) {
           console.log(`  [EmergencyExit] ${pos.poolName ?? pos.id}: PnL=${pnlPct.toFixed(1)}% (value=$${posValueUsd.toFixed(2)} entry=$${entryUsd.toFixed(2)}) → closing NOW`);
           try {
-            const result = await closePosition(pos.id);
+            // Stamp the handoff flag BEFORE the close TX so the parallel Healer cycle
+            // (which may run during our 30-60s close TX latency) skips this position.
+            try { const { updatePositionField } = await import("./positionManager.js"); updatePositionField(pos.id, "_slHandledAt", Date.now()); } catch {}
+            const result = await closePosition(pos.id, { reason: "EMERGENCY", pnlPct });
             const txSigs = result?.txSignatures ?? [];
             const solReturned = result?.solReceived ?? pos.solDeployed;
-            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EMERGENCY_SL", binRange: pos.binRange });
+            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EMERGENCY", binRange: pos.binRange });
             await notifyPositionClosed(pos.id, `emergency exit: PnL ${pnlPct.toFixed(1)}%`, txSigs);
-            if (closedTrade?.outcome === "loss") {
-              try { recordTokenLoss(closedTrade.poolName); } catch {}
+            if (closedTrade) {
+              if (closedTrade.outcome === "loss") {
+                try { recordTokenLoss(closedTrade.poolName); } catch {}
+              }
             }
             await new Promise(r => setTimeout(r, 15000));
             await autoSwapTokensToSOL(notifyMessage);
@@ -75,7 +93,7 @@ export async function runHealer() {
           recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL", binRange: pos.binRange });
           await notifyMessage(
             `🔄 <b>Manual close detected</b>\n\n` +
-            `Pool: ${pos.poolName ?? "?"}\n` +
+            `Pool: ${esc(pos.poolName ?? "?")}\n` +
             `SOL deployed: ${pos.solDeployed ?? "?"}\n\n` +
             `Auto-swapping token sisa...`
           );
@@ -109,20 +127,38 @@ export async function runHealer() {
         const preClosePnlPct = typeof exit.pnlPercent === "number" ? exit.pnlPercent : null;
         console.log(`[PNL] Pre-close PnL for ${exit.positionId}: ${preClosePnlPct?.toFixed(2) ?? "null"}% (from exitStrategy)`);
 
-        const result = await closePosition(exit.positionId);
-        const txSignatures = result?.txSignatures ?? [];
+        // Stamp handoff flag BEFORE the close TX so the parallel emergency check (60s tick)
+        // skips this position during the 30-60s on-chain close latency. exitStrategy.js
+        // already stamps this for SL paths; this catches all other exits (OOR/TP/MAX_HOLD).
+        try { const { updatePositionField } = await import("./positionManager.js"); updatePositionField(exit.positionId, "_slHandledAt", Date.now()); } catch {}
+
+        // Resolve closeReason BEFORE the close TX so cooldownManager picks the
+        // right per-reason duration when closePosition sets the cooldown.
+        // Prefer structured code from exitStrategy (set on every toClose.push since
+        // the audit fix). Fall back to parsing the human-readable reason string for
+        // resilience against any unstructured push that may sneak in.
         const pos = openPos.find(p => p.id === exit.positionId);
+        let closeReason = exit.code ?? null;
+        if (!closeReason) {
+          const r = (exit.reason ?? "").toLowerCase();
+          if (r.includes("position gone") || r.includes("external close")) closeReason = "POSITION_GONE";
+          else if (r.includes("out of range")) {
+            const dir = pos?.oorDirection;
+            closeReason = dir === "left" ? "OOR_LEFT" : dir === "right" ? "OOR_RIGHT" : "OOR";
+          }
+          else if (r.includes("trailing")) closeReason = "TRAILING_TP";
+          else if (r.includes("fee take-profit") || r.includes("fee tp")) closeReason = "FEE_TP";
+          else if (r.includes("stop loss") || r.includes("stop-loss")) closeReason = "SL";
+          else if (r.includes("take profit") || r.includes("take-profit")) closeReason = "TP";
+          else if (r.includes("max hold")) closeReason = "MAX_HOLD";
+          else if (r.includes("fee apr")) closeReason = "FEE_APR_FLOOR";
+          else if (r.includes("volatility")) closeReason = "VOLATILITY";
+          else closeReason = "UNKNOWN";
+        }
+
+        const result = await closePosition(exit.positionId, { reason: closeReason, pnlPct: preClosePnlPct });
+        const txSignatures = result?.txSignatures ?? [];
         const solReturned = exit.currentValue ?? result?.solReceived ?? pos?.solDeployed;
-        // Derive closeReason from exit.reason string
-        let closeReason = "UNKNOWN";
-        const r = (exit.reason ?? "").toLowerCase();
-        if (r.includes("out of range")) closeReason = r.includes("left") || r.includes("dump") ? "OOR_LEFT" : "OOR_RIGHT";
-        else if (r.includes("trailing")) closeReason = "TRAILING_TP";
-        else if (r.includes("stop") || r.includes("sl")) closeReason = "SL";
-        else if (r.includes("take profit") || r.includes("fee tp")) closeReason = "TP";
-        else if (r.includes("max hold")) closeReason = "MAX_HOLD";
-        else if (r.includes("fee apr")) closeReason = "FEE_APR_FLOOR";
-        else if (r.includes("volatility")) closeReason = "VOLATILITY";
         const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason, binRange: pos?.binRange });
         await notifyPositionClosed(exit.positionId, exit.reason, txSignatures);
         closedCount++;

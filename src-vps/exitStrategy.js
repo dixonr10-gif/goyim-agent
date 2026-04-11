@@ -1,5 +1,6 @@
 import fs from "fs";
 import { config } from "../config.js";
+import { isStrictHours } from "./timeHelper.js";
 
 async function fetchTokenPriceChange1h(tokenMint) {
   if (!tokenMint) return null;
@@ -72,7 +73,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
         // Position gone on-chain → force close to clean up
         if (position._positionGone) {
           console.log(`  🗑️ ${position.id}: position gone on-chain — forcing close`);
-          toClose.push({ positionId: position.id, reason: "position gone on-chain (external close)", pnlPercent: 0, currentValue: 0 });
+          toClose.push({ positionId: position.id, code: "POSITION_GONE", reason: "position gone on-chain (external close)", pnlPercent: 0, currentValue: 0 });
           continue;
         }
         // Bad data → skip this cycle entirely, don't make decisions on garbage
@@ -122,25 +123,22 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       }
 
       // If still no PnL after repair attempt
+      const effectiveMaxHold = isStrictHours() ? 2 : EXIT_RULES.maxHoldHours;
       if (pnlSource === "none") {
-        if (holdHours >= EXIT_RULES.maxHoldHours) {
-          toClose.push({ positionId: position.id, reason: `max hold: ${holdHours.toFixed(0)}h`, pnlPercent: 0, currentValue });
+        if (holdHours >= effectiveMaxHold) {
+          toClose.push({ positionId: position.id, code: "MAX_HOLD", reason: `max hold: ${holdHours.toFixed(0)}h${isStrictHours() ? " (strict)" : ""}`, pnlPercent: 0, currentValue });
           continue;
         }
         console.log(`  ⏳ ${position.id}: holding (${holdHours.toFixed(1)}h) — PnL unavailable, skipping exit checks`);
         continue;
       }
 
-      // Persist PnL to file
+      // Persist PnL via in-memory map (avoids race with updatePositionField writers below)
       try {
-        const posFile = '/root/goyim-agent/data/open_positions.json';
-        const positions = JSON.parse(fs.readFileSync(posFile, 'utf8'));
-        if (positions[position.id]) {
-          positions[position.id].lastPnlPct    = parseFloat(pnlPercent.toFixed(2));
-          positions[position.id].lastPnlSource = pnlSource;
-          positions[position.id].lastChecked   = new Date().toISOString();
-          fs.writeFileSync(posFile, JSON.stringify(positions, null, 2));
-        }
+        const { updatePositionField } = await import("./positionManager.js");
+        updatePositionField(position.id, "lastPnlPct",    parseFloat(pnlPercent.toFixed(2)));
+        updatePositionField(position.id, "lastPnlSource", pnlSource);
+        updatePositionField(position.id, "lastChecked",   new Date().toISOString());
       } catch(e) {}
 
       // ── OOR check with 30-min grace period ───────────────────────────────
@@ -159,14 +157,15 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
             // Smart OOR: use on-chain direction (more accurate than price API)
             let oorWaitMinutes = config.outOfRangeWaitMinutes; // default 30
             const oorDir = binStatus.oorDirection; // "right" = pump, "left" = dump
+            const strict = isStrictHours();
             if (oorDir === "right") {
               // Token pumped past range → position is all-token, value up, no IL
-              oorWaitMinutes = 60;
-              console.log(`  [OOR] kanan — token pump (active=${binStatus.activeBinId} > upper=${binStatus.upperBin}), extend wait 60m`);
+              oorWaitMinutes = strict ? 20 : 35;
+              console.log(`  [OOR] kanan — token pump (active=${binStatus.activeBinId} > upper=${binStatus.upperBin}), wait ${oorWaitMinutes}m${strict ? " (strict)" : ""}`);
             } else if (oorDir === "left") {
               // Token dumped below range → position is all-SOL, IL realized
-              oorWaitMinutes = 15;
-              console.log(`  [OOR] kiri — token dump (active=${binStatus.activeBinId} < lower=${binStatus.lowerBin}), close in 15m`);
+              oorWaitMinutes = strict ? 10 : 15;
+              console.log(`  [OOR] kiri — token dump (active=${binStatus.activeBinId} < lower=${binStatus.lowerBin}), close in ${oorWaitMinutes}m${strict ? " (strict)" : ""}`);
             }
             updatePositionField(position.id, 'oorDirection', oorDir);
 
@@ -197,7 +196,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
 
               if (!rebalanced) {
               console.log(`  🚨 ${position.id}: OOR ${minutesOOR.toFixed(0)}m+ (wait=${oorWaitMinutes}m) AUTO-CLOSING (active=${binStatus.activeBinId} range=[${binStatus.lowerBin}-${binStatus.upperBin}])`);
-              toClose.push({ positionId: position.id, reason: `out of range ${minutesOOR.toFixed(0)}m (wait=${oorWaitMinutes}m)`, pnlPercent, currentValue });
+              toClose.push({ positionId: position.id, code: oorDir === "left" ? "OOR_LEFT" : "OOR_RIGHT", reason: `out of range ${oorDir ?? "?"} ${minutesOOR.toFixed(0)}m (wait=${oorWaitMinutes}m)`, pnlPercent, currentValue });
               }
               continue;
             } else {
@@ -217,7 +216,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
             const feePct = binStatus.totalFeeSol / position.solDeployed;
             if (feePct >= config.takeProfitFeePct) {
               console.log(`  💰 ${position.id}: Fee TP: ${binStatus.totalFeeSol.toFixed(4)} SOL fees (${(feePct * 100).toFixed(1)}%)`);
-              toClose.push({ positionId: position.id, reason: `fee take-profit: ${(feePct * 100).toFixed(1)}%`, pnlPercent, currentValue });
+              toClose.push({ positionId: position.id, code: "FEE_TP", reason: `fee take-profit: ${(feePct * 100).toFixed(1)}%`, pnlPercent, currentValue });
               continue;
             }
           }
@@ -226,34 +225,100 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
         console.warn(`  ⚠️ OOR/fee check failed for ${position.id}:`, e.message);
       }
 
-      // ── Stop loss (requires 2 consecutive negative readings to avoid bad data) ──
-      if (pnlPercent <= EXIT_RULES.stopLossPercent) {
-        const prevPnl = position._prevPnlPercent ?? null;
-        const { updatePositionField: ufSL } = await import("./positionManager.js");
-        ufSL(position.id, "_prevPnlPercent", pnlPercent);
+      // ── Stop loss — severity-tiered (3 tiers) ─────────────────────────────
+      // Tier 3 (panic, ≤2.5x normal SL): instant close, no checks
+      // Tier 2 (hard,  ≤1.7x normal SL): instant close, no waiting (catches fast crashes)
+      // Tier 1 (normal, ≤1x): 2-consecutive-reading confirmation + smart glitch detector
+      //
+      // The old "swing > 15% = bad data, skip" guard was REMOVED at tiers 2/3 because
+      // it caused SL to no-op during real fast dumps. At tier 1 it's replaced with a
+      // smart detector that compares PnL delta vs underlying USD value delta — true
+      // RPC glitches change the PnL number without moving the underlying value.
+      //
+      // Each successful SL push also stamps `_slHandledAt` so the 60-second emergency
+      // check in healerAgent.js can skip positions Healer just queued for close
+      // (prevents double-close race within the 2-min Healer window).
+      const effectiveSL = isStrictHours() ? -4 : EXIT_RULES.stopLossPercent;  // -6
+      const hardSL  = effectiveSL * 1.7;   // ~-10  (~-7 strict)
+      const panicSL = effectiveSL * 2.5;   // ~-15  (~-10 strict)
 
-        // Sanity check: if PnL swung more than 15% from last reading, likely bad data → skip
-        if (prevPnl !== null && Math.abs(pnlPercent - prevPnl) > 15) {
-          console.log(`  ⚠️ ${position.id}: PnL swing ${prevPnl.toFixed(1)}%→${pnlPercent.toFixed(1)}% (${Math.abs(pnlPercent - prevPnl).toFixed(0)}% delta) — likely bad data, skipping SL`);
-        } else if (prevPnl !== null && prevPnl <= EXIT_RULES.stopLossPercent) {
-          // 2 consecutive SL readings — confirmed loss
+      const { updatePositionField: ufSL } = await import("./positionManager.js");
+
+      if (pnlPercent <= panicSL) {
+        // Tier 3 — no checks, no confirmation, close immediately
+        console.log(`  💀 ${position.id}: PANIC SL ${pnlPercent.toFixed(1)}% (≤${panicSL.toFixed(1)}%) — closing immediately`);
+        ufSL(position.id, "_slHandledAt", Date.now());
+        toClose.push({ positionId: position.id, code: "SL", reason: `panic SL: ${pnlPercent.toFixed(1)}% [${pnlSource}]`, pnlPercent, currentValue });
+        continue;
+      }
+
+      if (pnlPercent <= hardSL) {
+        // Tier 2 — instant close, no waiting (fast crashes never get a 2-tick chance)
+        console.log(`  🛑 ${position.id}: HARD SL ${pnlPercent.toFixed(1)}% (≤${hardSL.toFixed(1)}%) — closing (no wait)`);
+        ufSL(position.id, "_slHandledAt", Date.now());
+        toClose.push({ positionId: position.id, code: "SL", reason: `hard SL: ${pnlPercent.toFixed(1)}% [${pnlSource}]`, pnlPercent, currentValue });
+        continue;
+      }
+
+      if (pnlPercent <= effectiveSL) {
+        // Tier 1 (noise zone -6% to -10%) — require 2 consecutive readings + smart glitch check
+        const prevPnl = position._prevPnlPercent ?? null;
+        const lastVal = position._lastPosValueUsd ?? null;
+        const currVal = position._posValueUsd ?? null;
+
+        ufSL(position.id, "_prevPnlPercent", pnlPercent);
+        if (currVal != null) ufSL(position.id, "_lastPosValueUsd", currVal);
+
+        // Smart glitch detector: PnL changed sharply but underlying USD value didn't
+        // move directionally consistent → true RPC glitch (PnL number wandered without
+        // the position actually moving). Only applied at tier 1, never at tier 2/3.
+        let isGlitch = false;
+        if (prevPnl !== null && lastVal !== null && currVal !== null && lastVal > 0 && Math.abs(pnlPercent - prevPnl) > 15) {
+          const pnlDeltaSign = Math.sign(pnlPercent - prevPnl);
+          const valDeltaSign = Math.sign(currVal - lastVal);
+          const valChangeAbs = Math.abs((currVal - lastVal) / lastVal);
+          // Glitch if: PnL moved one way while value moved opposite, OR value barely moved (<0.5%)
+          isGlitch = (pnlDeltaSign !== 0 && pnlDeltaSign !== valDeltaSign) || valChangeAbs < 0.005;
+        }
+
+        if (isGlitch) {
+          console.log(`  ⚠️ ${position.id}: PnL swing ${prevPnl.toFixed(1)}%→${pnlPercent.toFixed(1)}% but value $${lastVal.toFixed(0)}→$${currVal.toFixed(0)} (no real move) — RPC glitch, skipping SL`);
+        } else if (prevPnl !== null && prevPnl <= effectiveSL) {
           console.log(`  🛑 ${position.id}: SL confirmed (prev=${prevPnl.toFixed(1)}% now=${pnlPercent.toFixed(1)}%)`);
-          toClose.push({ positionId: position.id, reason: `stop loss: ${pnlPercent.toFixed(1)}% [${pnlSource}]`, pnlPercent, currentValue });
+          ufSL(position.id, "_slHandledAt", Date.now());
+          toClose.push({ positionId: position.id, code: "SL", reason: `stop loss: ${pnlPercent.toFixed(1)}% [${pnlSource}]`, pnlPercent, currentValue });
           continue;
         } else {
           console.log(`  ⚠️ ${position.id}: SL triggered ${pnlPercent.toFixed(1)}% — waiting for confirmation next cycle`);
         }
       } else {
-        // Reset previous PnL tracker when above SL
-        try { const { updatePositionField: ufReset } = await import("./positionManager.js"); ufReset(position.id, "_prevPnlPercent", pnlPercent); } catch {}
+        // Above SL — reset trackers
+        try {
+          ufSL(position.id, "_prevPnlPercent", pnlPercent);
+          if (position._posValueUsd != null) ufSL(position.id, "_lastPosValueUsd", position._posValueUsd);
+        } catch {}
+      }
+
+      // ── Static Take Profit (runs BEFORE trailing TP) ──────────────────────
+      // Closes immediately when PnL hits TAKE_PROFIT_PERCENT (default 8%).
+      // Upper cap <= 90 guards against bad-data false-positives (e.g. RPC glitch
+      // claiming impossible gains). Runs before trailing TP so the static target
+      // always wins when both conditions fire on the same cycle — trailing TP
+      // still activates earlier at TRAILING_TP_ACTIVATION (6%, 4% strict) and
+      // handles the 6-8% band where static hasn't triggered yet.
+      if (pnlPercent >= EXIT_RULES.takeProfitPercent && pnlPercent <= 90) {
+        console.log(`  💰 ${position.id}: TAKE PROFIT hit +${pnlPercent.toFixed(1)}% (≥${EXIT_RULES.takeProfitPercent}%) — closing`);
+        toClose.push({ positionId: position.id, code: "TP", reason: `take profit: +${pnlPercent.toFixed(1)}% [${pnlSource}]`, pnlPercent, currentValue });
+        continue;
       }
 
       // ── Trailing Take Profit ──────────────────────────────────────────────
       // Activates at TRAILING_TP_ACTIVATION%, then tracks highWaterMark.
       // Closes when PnL drops TRAILING_TP_TRAIL% from HWM.
       try {
-        const trailActivation = config.trailingTpActivation ?? 6;
-        const trailDrop = config.trailingTpTrail ?? 3;
+        const strict = isStrictHours();
+        const trailActivation = strict ? 4 : (config.trailingTpActivation ?? 6);
+        const trailDrop = strict ? 2 : (config.trailingTpTrail ?? 3);
         const { updatePositionField: ufTrail } = await import("./positionManager.js");
 
         // Activate trailing when PnL first reaches activation threshold
@@ -265,9 +330,9 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
           position.highWaterMark = pnlPercent;
           console.log(`  🎯 [TrailingTP] ACTIVATED at +${pnlPercent.toFixed(2)}% (trail=${trailDrop}%)`);
           try {
-            const { notifyMessage: nMsg } = await import("./telegramBot.js");
+            const { notifyMessage: nMsg, esc: escFn } = await import("./telegramBot.js");
             const lock = (pnlPercent - trailDrop).toFixed(2);
-            await nMsg(`🎯 <b>Trailing TP aktif!</b>\n\nPool: ${position.poolName ?? position.id}\nPnL: <b>+${pnlPercent.toFixed(2)}%</b>\nHWM: +${pnlPercent.toFixed(2)}%\nLock: +${lock}%`);
+            await nMsg(`🎯 <b>Trailing TP aktif!</b>\n\nPool: ${escFn(position.poolName ?? position.id)}\nPnL: <b>+${pnlPercent.toFixed(2)}%</b>\nHWM: +${pnlPercent.toFixed(2)}%\nLock: +${lock}%`);
           } catch {}
         }
 
@@ -286,7 +351,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
           // Trigger close if PnL dropped trail amount from HWM
           if (dropFromHigh >= trailDrop) {
             console.log(`  🏁 [TrailingTP] TRIGGERED: HWM=+${hwm.toFixed(2)}% exit=+${pnlPercent.toFixed(2)}% lock=+${lockPct}%`);
-            toClose.push({ positionId: position.id, reason: `trailing TP: HWM +${hwm.toFixed(1)}% → +${pnlPercent.toFixed(1)}% (drop ${dropFromHigh.toFixed(1)}%)`, pnlPercent, currentValue });
+            toClose.push({ positionId: position.id, code: "TRAILING_TP", reason: `trailing TP: HWM +${hwm.toFixed(1)}% → +${pnlPercent.toFixed(1)}% (drop ${dropFromHigh.toFixed(1)}%)`, pnlPercent, currentValue });
             continue;
           } else {
             console.log(`  🎯 [TrailingTP] HWM=+${hwm.toFixed(2)}% now=+${pnlPercent.toFixed(2)}% lock=+${lockPct}% → holding`);
@@ -295,8 +360,8 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       } catch (e) { console.warn(`  ⚠️ TrailingTP error:`, e.message); }
 
       // ── Max hold time ─────────────────────────────────────────────────────
-      if (holdHours >= EXIT_RULES.maxHoldHours) {
-        toClose.push({ positionId: position.id, reason: `max hold: ${holdHours.toFixed(0)}h`, pnlPercent, currentValue });
+      if (holdHours >= effectiveMaxHold) {
+        toClose.push({ positionId: position.id, code: "MAX_HOLD", reason: `max hold: ${holdHours.toFixed(0)}h${isStrictHours() ? " (strict 2h)" : ""}`, pnlPercent, currentValue });
         continue;
       }
 
@@ -306,7 +371,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
         if (poolData) {
           const apr = poolData?.feeApr ?? 0;
           if (apr > 0 && apr < EXIT_RULES.minFeeAprToHold) {
-            toClose.push({ positionId: position.id, reason: `fee APR too low: ${apr.toFixed(1)}%`, pnlPercent, currentValue });
+            toClose.push({ positionId: position.id, code: "FEE_APR_FLOOR", reason: `fee APR too low: ${apr.toFixed(1)}%`, pnlPercent, currentValue });
             continue;
           }
         }
@@ -339,8 +404,9 @@ function checkStopLoss(position, currentValue) {
 
 function checkMaxHoldTime(position) {
   const holdHours = (Date.now() - new Date(position.openedAt).getTime()) / 3_600_000;
-  if (holdHours >= EXIT_RULES.maxHoldHours) {
-    return { shouldExit: true, reason: `max hold time: ${holdHours.toFixed(0)}h`, holdHours };
+  const maxHold = isStrictHours() ? 2 : EXIT_RULES.maxHoldHours;
+  if (holdHours >= maxHold) {
+    return { shouldExit: true, reason: `max hold time: ${holdHours.toFixed(0)}h${isStrictHours() ? " (strict)" : ""}`, holdHours };
   }
   return { shouldExit: false };
 }

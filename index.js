@@ -5,18 +5,17 @@ import fs from "fs";
 import { config } from "./config.js";
 import { startDailyReviewScheduler } from "./src/reviewScheduler.js";
 import { startFeeCompounder } from "./src/feeCompounder.js";
-import { getBrainContextForLLM } from "./src/selfImprovingPrompt.js";
 import { runHunter } from "./src/hunterAgent.js";
 import { runHealer, runEmergencyPriceCheck } from "./src/healerAgent.js";
 import { initTelegramBot, isAgentPaused, notifyMessage } from "./src/telegramBot.js";
 import { runHealthCheck } from "./src/healthCheck.js";
+import { getWIBHour } from "./src/timeHelper.js";
 import { startDailyPnLReport } from "./src/dailyReport.js";
 
 const HUNTER_INTERVAL_MS = config.loopIntervalMs;  // default 20min
 const HEALER_INTERVAL_MS = 2 * 60 * 1000;           // fixed 2min
 
 console.log("🚀 Goyim DLMM Agent (Dual-Agent) starting...");
-console.log(`   Brain:    ${getBrainContextForLLM().includes("v0") ? "v0 (fresh)" : "loaded"}`);
 console.log(`   Model:    ${config.openRouterModel}`);
 console.log(`   Hunter:   every ${HUNTER_INTERVAL_MS / 60_000}min`);
 console.log(`   Healer:   every ${HEALER_INTERVAL_MS / 60_000}min`);
@@ -66,6 +65,25 @@ setTimeout(() => {
 setInterval(() => {
   runHealthCheck(notifyMessage).catch(err => console.error("[HealthCheck error]", err.message));
 }, 60 * 60 * 1000);
+
+// ── Strict hours notification (check every 5min) ─────────────────────────────
+let _lastStrictNotif = null;
+setInterval(() => {
+  const h = getWIBHour();
+  if (h === 14 && _lastStrictNotif !== "enter") {
+    _lastStrictNotif = "enter";
+    notifyMessage(
+      `⚠️ <b>Strict Hours Aktif</b>\n\n🕑 14:00 - 18:00 WIB\n📉 SL: -6% → <b>-4%</b>\n🎯 TP activation: +6% → <b>+4%</b>\n📊 Trail: -3% → <b>-2%</b>\n💰 Min volume: $100k → <b>$200k</b>\n⏱ Max hold: 48h → <b>2h</b>\n🔄 OOR kanan: 35m → <b>20m</b>\n🔄 OOR kiri: 15m → <b>10m</b>\n\nBot tetap jalan tapi lebih selektif!`
+    ).catch(() => {});
+  } else if (h === 18 && _lastStrictNotif !== "exit") {
+    _lastStrictNotif = "exit";
+    notifyMessage(
+      `✅ <b>Normal Hours</b>\n\n🕕 18:00 WIB - parameter kembali normal\n📉 SL: -6% | 🎯 TP: +6% | 📊 Trail: -3%\n💰 Min volume: $100k\n⏱ Max hold: 48h | 🔄 OOR: 35m/15m`
+    ).catch(() => {});
+  } else if (h !== 14 && h !== 18) {
+    _lastStrictNotif = null;
+  }
+}, 5 * 60 * 1000);
 
 // ── Fee compounder (background) ───────────────────────────────────────────────
 startFeeCompounder(() => {

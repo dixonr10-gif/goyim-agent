@@ -4,6 +4,7 @@ import { getFullStats } from "./tradeMemory.js";
 import { getOpenPositions } from "./positionManager.js";
 import { getSOLBalance, getWalletAddress, getSolPriceUSD } from "./walletInfo.js";
 import { saveDailyLesson } from "./dailyLessons.js";
+import { esc } from "./telegramBot.js";
 
 function getNext7amWIB() {
   const now = new Date();
@@ -68,8 +69,8 @@ export async function generateDailyPnLReport() {
     msg += `📅 ${formatDate()}\n\n`;
     msg += `💰 PnL Hari Ini: <b>${pnlUsdToday >= 0 ? "+" : ""}$${pnlUsdToday.toFixed(2)}</b> (${pnlPctOverall}%)\n`;
     msg += `🏆 Win Rate: <b>${wr}%</b> (${wins.length} win / ${losses.length} loss)\n`;
-    msg += `📈 Best Trade: <b>${bestName} ${bestPnl}</b>\n`;
-    msg += `📉 Worst Trade: <b>${worstName} ${worstPnl}</b>\n`;
+    msg += `📈 Best Trade: <b>${esc(bestName)} ${bestPnl}</b>\n`;
+    msg += `📉 Worst Trade: <b>${esc(worstName)} ${worstPnl}</b>\n`;
     msg += `🔄 Total Trades: <b>${todayTrades.length}</b>\n\n`;
     msg += `💼 Wallet: <b>${solBal.toFixed(2)} SOL</b> ($${(solBal * solPrice).toFixed(0)} USD)\n`;
     msg += `📊 Open Positions: <b>${openPos.length}</b>`;
@@ -117,7 +118,13 @@ export function startDailyPnLReport(bot, chatId) {
       try {
         console.log("📊 Generating daily PnL report...");
         const report = await generateDailyPnLReport();
-        await bot.telegram.sendMessage(chatId, report, { parse_mode: "HTML" });
+        try {
+          await bot.telegram.sendMessage(chatId, report, { parse_mode: "HTML" });
+        } catch (err) {
+          if (err.message?.includes("parse entities")) {
+            await bot.telegram.sendMessage(chatId, report.replace(/<[^>]*>/g, ""));
+          } else { throw err; }
+        }
         console.log("✅ Daily PnL report sent!");
       } catch (err) {
         console.error("❌ DailyReport send error:", err.message);

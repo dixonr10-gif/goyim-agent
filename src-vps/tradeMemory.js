@@ -61,7 +61,10 @@ function saveMemory(memory) {
 /**
  * Catat posisi baru yang dibuka
  */
-export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeployed, decision, binRange = null }) {
+export function recordTradeOpen({
+  positionId, pool, poolName, strategy, solDeployed, decision, binRange = null,
+  poolTvl = null, poolVolume24h = null, poolFeeApr = null, organicScore = null,
+}) {
   const memory = loadMemory();
 
   const trade = {
@@ -76,6 +79,15 @@ export function recordTradeOpen({ positionId, pool, poolName, strategy, solDeplo
     llmRationale: decision.rationale,
     opportunityScore: decision.opportunityScore ?? null,
     binRange: binRange ?? null,
+
+    // Pool metrics at entry time — persisted for post-hoc analysis (TVL
+    // distribution, fee APR correlation with outcome, etc). Historical trades
+    // predating this field will have null here; new trades populate from
+    // hunterAgent.js call site.
+    poolTvl,
+    poolVolume24h,
+    poolFeeApr,
+    organicScore,
 
     // Di-isi saat close
     exitReason: null,

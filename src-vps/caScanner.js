@@ -1,5 +1,7 @@
 // src/caScanner.js — Contract Address scanner for Telegram inline use
 
+import { esc } from "./telegramBot.js";
+
 const DEXSCREENER_API = "https://api.dexscreener.com/latest/dex";
 const METEORA_API = "https://dlmm.datapi.meteora.ag";
 const BIRDEYE_API = "https://public-api.birdeye.so/defi";
@@ -289,7 +291,7 @@ export function formatCAScanMessage(scan) {
   const lpIcon = t.launchpadAllowed === true ? "✅" : t.launchpadAllowed === false ? "⚠️" : "❓";
 
   let msg = `🔍 <b>CA Scan Result</b>\n━━━━━━━━━━━━━━━\n`;
-  msg += `🪙 <a href="${solscanUrl}"><b>${t.name}</b></a> (<code>${t.symbol}</code>)\n`;
+  msg += `🪙 <a href="${solscanUrl}"><b>${esc(t.name)}</b></a> (<code>${esc(t.symbol)}</code>)\n`;
   msg += `📋 CA: <code>${scan.mint}</code>\n\n`;
 
   msg += `📊 <b>Market Info:</b>\n`;
@@ -317,7 +319,7 @@ export function formatCAScanMessage(scan) {
       const url = `https://app.meteora.ag/dlmm/${p.address}`;
       const apr = p.apr ?? "?";
       const warn = p.lowLiquidity ? " ⚠️" : "";
-      msg += `• <a href="${url}">${p.name}</a> | APR: ${apr}% | TVL: $${fmtNum(p.tvl)}${warn} | Vol: $${fmtNum(p.volume24h)}\n`;
+      msg += `• <a href="${url}">${esc(p.name)}</a> | APR: ${apr}% | TVL: $${fmtNum(p.tvl)}${warn} | Vol: $${fmtNum(p.volume24h)}\n`;
     }
     if (scan.pools.every(p => p.lowLiquidity)) msg += `<i>⚠️ All pools have low liquidity (&lt;$1K)</i>\n`;
     msg += "\n";

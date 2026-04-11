@@ -1,4 +1,5 @@
 ﻿import { generateDailyReview } from "./goyimChat.js";
+import { esc } from "./telegramBot.js";
 
 let schedulerStarted = false;
 
@@ -24,13 +25,16 @@ export function startDailyReviewScheduler(bot, chatId) {
         console.log("📋 Generating daily review...");
         const review = await generateDailyReview();
 
-        // Kirim review
-        const sent = await bot.telegram.sendMessage(chatId,
-          `<b>📋 Daily Review — Goyim Agent</b>\n\n${review}`,
-          { parse_mode: "HTML" }
-        );
+        const body = `<b>📋 Daily Review — Goyim Agent</b>\n\n${esc(review)}`;
+        let sent;
+        try {
+          sent = await bot.telegram.sendMessage(chatId, body, { parse_mode: "HTML" });
+        } catch (err) {
+          if (err.message?.includes("parse entities")) {
+            sent = await bot.telegram.sendMessage(chatId, body.replace(/<[^>]*>/g, ""));
+          } else { throw err; }
+        }
 
-        // Pin pesan
         await bot.telegram.pinChatMessage(chatId, sent.message_id, {
           disable_notification: false
         });

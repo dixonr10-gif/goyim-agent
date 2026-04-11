@@ -63,18 +63,18 @@ In priority order:
 6. **Fee APR floor**: pool fee APR < `MIN_FEE_APR_TO_HOLD` (default 10%)
 
 ### Self-Learning System
-Three feedback loops run in Hunter:
+Two feedback loops run in Hunter:
 - **`postTradeAnalyzer.js`** — LLM debriefs each closed trade → `data/lessons.json`
 - **`patternLearner.js`** — discovers winning conditions every 5 trades → `data/patterns.json`
-- **`selfImprovingPrompt.js`** — rewrites agent rules every 6h → `data/agent_brain.json`
 - **`thresholdEvolver.js`** — auto-adjusts .env filter thresholds after each close based on win-rate + avg PnL
+
+> **Removed:** `selfImprovingPrompt.js` was deleted because its evolved `oppScore` thresholds caused brain paralysis (rejecting all valid candidates). `thresholdEvolver` is the safe alternative — it only adjusts pool filter thresholds, not decision logic.
 
 ### LP Study (`src/lpStudy.js`)
 Fetches top Meteora pools, sends to LLM for 4-8 actionable lessons → `data/lp_lessons.json`.
 Triggered via Telegram `/learn [pool_address]` or programmatically.
 
 ### State Persistence (`data/`)
-- `agent_brain.json` — self-written trading rules (versioned)
 - `trade_memory.json` — full trade history, win/loss stats, pool blacklist/whitelist
 - `patterns.json` — discovered winning entry/exit conditions
 - `lessons.json` — per-trade LLM debrief results

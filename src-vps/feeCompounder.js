@@ -4,6 +4,7 @@
 import { createRequire } from "module";
 import { config } from "../config.js";
 import { getWallet, getConnection } from "./positionManager.js";
+import { esc } from "./telegramBot.js";
 
 const require = createRequire(import.meta.url);
 
@@ -104,7 +105,7 @@ export async function checkAndClaimFees(position, notifyFn = null) {
     if (notifyFn) {
       await notifyFn(
         `💰 <b>Fees Claimed!</b>\n\n` +
-        `Pool: ${position.poolName ?? "?"}\n` +
+        `Pool: ${esc(position.poolName ?? "?")}\n` +
         `SOL fees: ${feeSol.toFixed(4)} SOL ($${solFeeUsd.toFixed(2)})\n` +
         `Token fees: ~$${tokenFeeUsd.toFixed(2)}\n` +
         `Total: <b>$${totalUsd.toFixed(2)}</b>\n` +

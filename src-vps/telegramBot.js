@@ -4,7 +4,7 @@ import { getOpenPositions, closePosition } from "./positionManager.js";
 import { getFullStats } from "./tradeMemory.js";
 import { getSOLBalance, getTokenBalances, getWalletAddress, formatWalletMessage, getSolPriceUSD, getUsdToIdrRate } from "./walletInfo.js";
 
-function esc(text) {
+export function esc(text) {
   return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
@@ -131,7 +131,7 @@ function registerCommands() {
         const vol = p.volume?.["24h"] ?? 0;
         const tvl = p.tvl ?? 0;
         const apr = ((p.apr ?? 0) * 100).toFixed(1);
-        msg += `${i + 1}. <b>${p.name}</b>${p.uptrend ? " 🚀" : ""}\n`;
+        msg += `${i + 1}. <b>${esc(p.name)}</b>${p.uptrend ? " 🚀" : ""}\n`;
         msg += `   Vol: $${(vol / 1000).toFixed(0)}k | TVL: $${(tvl / 1000).toFixed(0)}k | APR: ${apr}% | Organic: ${p.organicScore ?? "?"}/100\n\n`;
       });
       await ctx.replyWithHTML(msg, mainMenu());
@@ -142,7 +142,7 @@ function registerCommands() {
     const c = config;
     const tp = process.env.TAKE_PROFIT_PERCENT ?? "5";
     const sl = process.env.STOP_LOSS_PERCENT ?? "-3";
-    const mh = process.env.MAX_HOLD_HOURS ?? "48";
+    const mh = process.env.MAX_HOLD_HOURS ?? "3";
     const msg =
       `<b>⚙️ Current Thresholds</b>\n${"─".repeat(25)}\n\n` +
       `Min Volume 24h: <b>$${(c.minPoolVolumeUsd / 1000).toFixed(0)}k</b>\n` +
@@ -305,7 +305,7 @@ function registerCommands() {
       const { studyTopLPs } = await import("./lpStudy.js");
       const result = await studyTopLPs(poolAddress);
       if (!result.lessons.length) { await ctx.reply("📭 No lessons extracted.", mainMenu()); return; }
-      const lessonsText = result.lessons.slice(0, 6).map((l, i) => `${i + 1}. [${l.confidence}%] ${l.lesson}`).join("\n\n");
+      const lessonsText = result.lessons.slice(0, 6).map((l, i) => `${i + 1}. [${l.confidence}%] ${esc(l.lesson)}`).join("\n\n");
       await ctx.replyWithHTML(`<b>📚 LP Lessons (${result.lessons.length} saved)</b>\n\n${lessonsText}`, mainMenu());
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }
   });
@@ -654,7 +654,7 @@ function registerCallbacks() {
       await ctx.editMessageText("📊 Lagi nulis daily review...");
       const { generateDailyReview } = await import("./goyimChat.js");
       const review = await generateDailyReview();
-      await ctx.editMessageText(`<b>📋 Daily Review</b>\n\n${review}`, { parse_mode: "HTML", ...mainMenu() });
+      await ctx.editMessageText(`<b>📋 Daily Review</b>\n\n${esc(review)}`, { parse_mode: "HTML", ...mainMenu() });
     } catch (err) { await ctx.editMessageText(`❌ ${err.message}`, { ...mainMenu() }); }
   });
   bot.action("pause", async (ctx) => {
@@ -678,7 +678,7 @@ function registerCallbacks() {
     let closed = 0;
     for (const pos of positions) {
       try {
-        const result = await closePosition(pos.id);
+        const result = await closePosition(pos.id, { reason: "MANUAL_CLOSEALL" });
         const solReturned = result?.solReceived ?? pos.solDeployed;
         recordTradeClose({ positionId: pos.id, solReturned, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL_CLOSEALL" });
         closed++;
@@ -695,7 +695,7 @@ function registerCallbacks() {
     await ctx.answerCbQuery("Closing...");
     try {
       const pos = getOpenPositions().find(p => p.id === posId);
-      const result = await closePosition(posId);
+      const result = await closePosition(posId, { reason: "MANUAL" });
       const solReturned = result?.solReceived ?? pos?.solDeployed;
       const { recordTradeClose } = await import("./tradeMemory.js");
       recordTradeClose({ positionId: posId, solReturned, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason: "MANUAL" });
@@ -1094,13 +1094,13 @@ export async function notifyAgentDecision(decision) {
   if (["open", "close"].includes(decision.action)) return;
   if (decision.action === "skip" && decision.confidence < 40) return;
   const emoji = { hold: "⏸️", skip: "⏭️" }[decision.action] ?? "📊";
-  await sendNotification(`${emoji} <b>${decision.action.toUpperCase()}</b> | Score: ${decision.opportunityScore ?? "?"}/100\n${decision.rationale?.slice(0, 150)}`);
+  await sendNotification(`${emoji} <b>${decision.action.toUpperCase()}</b> | Score: ${decision.opportunityScore ?? "?"}/100\n${esc(decision.rationale?.slice(0, 150))}`);
 }
 
 export async function notifyError(errorMsg) {
   if (!bot || !config.telegramChatId) return;
   recordError(errorMsg);
-  await sendNotification(`💥 <b>Error</b>\n<code>${errorMsg?.slice(0,200)}</code>`);
+  await sendNotification(`💥 <b>Error</b>\n<code>${esc(errorMsg?.slice(0,200))}</code>`);
 }
 
 export async function notifyMessage(html) {

@@ -1,6 +1,8 @@
 // src-vps/hunterAgent.js
 // Hunter Agent — scans pools, makes LLM entry decisions every 30 min
 
+import fs from "fs";
+import path from "path";
 import { config } from "../config.js";
 import { scanPools, formatPoolsForLLM, fetchDexScreenerMeteora } from "./poolScanner.js";
 import { checkBundler } from "./bundlerChecker.js";
@@ -10,8 +12,7 @@ import { openPosition, getOpenPositions, syncOnChainPositions, checkWalletBalanc
 import { recordTradeOpen, recordTradeClose, getMemoryContextForLLM, isPoolBlacklisted, getFullStats } from "./tradeMemory.js";
 import { getRecentLessonsForLLM } from "./postTradeAnalyzer.js";
 import { maybeLearnPatterns, getPatternsForLLM } from "./patternLearner.js";
-import { maybeUpdateBrain, getBrainContextForLLM } from "./selfImprovingPrompt.js";
-import { notifyPositionOpened, notifyPositionClosed, notifyAgentDecision, notifyError, notifyMessage, isAgentPaused } from "./telegramBot.js";
+import { notifyPositionOpened, notifyPositionClosed, notifyAgentDecision, notifyError, notifyMessage, isAgentPaused, esc } from "./telegramBot.js";
 import { autoSwapTokensToSOL } from "./autoSwap.js";
 import { isOnCooldown, getCooldownRemaining, extractTokenSymbol, setCooldown } from "./cooldownManager.js";
 import { isTokenBlacklisted, decayBlacklist } from "./blacklistManager.js";
@@ -20,9 +21,30 @@ import { recordLastRun } from "./healthCheck.js";
 import { recordHunterRunResult } from "./thresholdEvolver.js";
 import { getPoolScoreAdjustment, recordPoolDeploy } from "./poolMemory.js";
 import { getCandles, getTASignal } from "./technicalAnalysis.js";
+import { isStrictHours, formatWIB, getWIBHour } from "./timeHelper.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
+let strictLossCooldownUntil = 0;
+let strictCooldownNotified = false;
+
+const STRICT_COOLDOWN_FILE = path.resolve("data/strict_cooldown.json");
+
+// Restore strict cooldown across PM2 restart
+(function restoreStrictCooldown() {
+  try {
+    if (!fs.existsSync(STRICT_COOLDOWN_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(STRICT_COOLDOWN_FILE, "utf-8"));
+    const until = Number(data?.until ?? 0);
+    if (until > Date.now()) {
+      strictLossCooldownUntil = until;
+      console.log(`[Hunter] ⏰ Restored strict cooldown from disk: ${Math.ceil((until - Date.now())/60000)}m remaining`);
+    } else {
+      fs.unlinkSync(STRICT_COOLDOWN_FILE);
+      console.log("[Hunter] Strict cooldown file expired — removed");
+    }
+  } catch (e) { console.warn("[Hunter] restoreStrictCooldown failed:", e.message); }
+})();
 
 const STABLE_TOKENS = ["USDC", "USDT", "DAI", "BUSD", "USDS", "USDH", "USDE", "PYUSD"];
 
@@ -55,11 +77,13 @@ async function fetchMultiTimeframePriceChange(poolAddress) {
     const h1 = parseFloat(pair.priceChange?.h1 ?? "NaN");
     const h6 = parseFloat(pair.priceChange?.h6 ?? "NaN");
     const h24 = parseFloat(pair.priceChange?.h24 ?? "NaN");
+    const priceUsd = parseFloat(pair.priceUsd ?? "NaN");
     return {
       m5: Number.isFinite(m5) ? m5 : null,
       h1: Number.isFinite(h1) ? h1 : null,
       h6: Number.isFinite(h6) ? h6 : null,
       h24: Number.isFinite(h24) ? h24 : null,
+      priceUsd: Number.isFinite(priceUsd) ? priceUsd : null,
     };
   } catch { return null; }
 }
@@ -142,6 +166,10 @@ export function getDailyLossInfo() {
 }
 
 export async function runHunter() {
+  // Stamp tick at the very top so health check sees Hunter ticking even when
+  // gated below by pause/cooldown/low-balance early-returns (avoids false STALE alarm)
+  recordLastRun("hunter");
+
   if (isAgentPaused()) { console.log("⏸️ [Hunter] paused"); return; }
 
   // Daily loss limit
@@ -149,6 +177,19 @@ export async function runHunter() {
   if (dailyLoss >= DAILY_LOSS_LIMIT_SOL) {
     console.log(`[Hunter] Daily loss limit reached: ${dailyLoss.toFixed(2)}/${DAILY_LOSS_LIMIT_SOL} SOL — paused until 00:00 UTC`);
     return;
+  }
+
+  // Strict hours loss cooldown (2h pause after loss during 14-18 WIB)
+  if (Date.now() < strictLossCooldownUntil) {
+    const rem = Math.ceil((strictLossCooldownUntil - Date.now()) / 60_000);
+    console.log(`[Hunter] ⏰ Strict loss cooldown: ${rem}m remaining (resume ${formatWIB(new Date(strictLossCooldownUntil))})`);
+    return;
+  } else if (strictLossCooldownUntil > 0 && !strictCooldownNotified) {
+    strictCooldownNotified = true;
+    strictLossCooldownUntil = 0;
+    try { if (fs.existsSync(STRICT_COOLDOWN_FILE)) fs.unlinkSync(STRICT_COOLDOWN_FILE); } catch {}
+    console.log(`[Hunter] ✅ Strict loss cooldown selesai — ${formatWIB()}`);
+    try { await notifyMessage(`✅ <b>Loss Cooldown Selesai</b>\n\n⏰ ${formatWIB()}\nHunter aktif kembali!`); } catch {}
   }
 
   if (Date.now() < lowBalanceCooldownUntil) {
@@ -168,10 +209,35 @@ export async function runHunter() {
     // Decay expired blacklists (7d)
     try { decayBlacklist(); } catch {}
 
-    // Learning systems (brain = observations only, no hard rules)
+    // Learning systems (pattern discovery only — selfImprovingPrompt removed
+    // due to brain-paralysis bug where evolved oppScore thresholds rejected
+    // valid candidates).
     const { stats, trades: allTrades } = getFullStats();
-    await maybeUpdateBrain(stats);
     await maybeLearnPatterns(allTrades);
+
+    // Strict hours loss cooldown: if loss in last 2h during strict hours → pause
+    if (isStrictHours()) {
+      console.log(`  ⏰ Strict hours aktif (${formatWIB()}) — SL:-4% TP:+4% Trail:-2% MinVol:$200k`);
+      const twoHoursAgo = Date.now() - 2 * 3_600_000;
+      const recentLoss = (allTrades ?? []).find(t =>
+        t.closedAt && t.outcome === "loss" && new Date(t.closedAt).getTime() > twoHoursAgo
+      );
+      if (recentLoss) {
+        strictLossCooldownUntil = Date.now() + 2 * 3_600_000;
+        strictCooldownNotified = false;
+        try {
+          fs.mkdirSync(path.dirname(STRICT_COOLDOWN_FILE), { recursive: true });
+          fs.writeFileSync(STRICT_COOLDOWN_FILE, JSON.stringify({ until: strictLossCooldownUntil, reason: recentLoss.poolName, setAt: new Date().toISOString() }, null, 2));
+        } catch (e) { console.warn("[Hunter] persist strict cooldown failed:", e.message); }
+        console.log(`  🛑 Loss detected in strict hours (${recentLoss.poolName}) — cooldown 2h until ${formatWIB(new Date(strictLossCooldownUntil))}`);
+        try {
+          await notifyMessage(
+            `🛑 <b>Loss Cooldown Aktif!</b>\n\nAda loss di strict hours (14-18 WIB)\nPool: ${esc(recentLoss.poolName)}\n🚫 Hunter pause 2 jam\n⏰ Resume: ${formatWIB(new Date(strictLossCooldownUntil))}`
+          );
+        } catch {}
+        return;
+      }
+    }
 
     // Sync on-chain state
     await syncOnChainPositions();
@@ -309,7 +375,6 @@ export async function runHunter() {
       tradeMemoryContext: getMemoryContextForLLM(),
       lessonsContext: getRecentLessonsForLLM(8),
       patternsContext: getPatternsForLLM(),
-      brainContext: getBrainContextForLLM(),
     });
 
     // Smart wallet signal: boost confidence if 2+ tracked wallets are in the target pool
@@ -350,7 +415,7 @@ export async function runHunter() {
               console.log(`[PNL] Pre-close LLM: currentValue=${currentValue.toFixed(4)} SOL → pnl=${preClosePnlPct.toFixed(2)}%`);
             }
           } catch {}
-          const result = await closePosition(posId);
+          const result = await closePosition(posId, { reason: "LLM_DECISION", pnlPct: preClosePnlPct });
           const txSignatures = result?.txSignatures ?? [];
           const solReturned = result?.solReceived ?? pos.solDeployed;
           recordTradeClose({ positionId: posId, solReturned, preClosePnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "LLM_DECISION" });
@@ -404,6 +469,31 @@ export async function runHunter() {
                 } else if (mtfDump.h1 !== null && mtfDump.h1 < -20) {
                   console.log(`  [DumpFilter] ${pool.name} dumping ${mtfDump.h1.toFixed(0)}% 1h → skip`);
                   momentumSkip = true;
+                } else if (mtfDump.h24 !== null && mtfDump.h24 < 0) {
+                  // ── ATH dump filter — skip tokens already dumped >=70% from 24h ATH ──
+                  // Uses h24 price change as proxy for 24h high (the "ATH within window").
+                  // Per spec formula:
+                  //   ath = currentPrice / (1 - magnitudeOfDrop)
+                  //   dropFromATH% = (ath - current) / ath * 100
+                  // This mathematically simplifies to |h24| when h24 is negative, but we
+                  // keep it explicit so future maintainers can swap in a real ATH source.
+                  const magnitudeOfDrop = -mtfDump.h24 / 100;   // e.g. -75 → 0.75
+                  let dropFromATH;
+                  if (magnitudeOfDrop >= 0.99) {
+                    // Avoid divide-by-near-zero for near-total collapses (h24 <= -99%)
+                    dropFromATH = 99;
+                  } else if (mtfDump.priceUsd) {
+                    const currentPrice = mtfDump.priceUsd;
+                    const athPrice = currentPrice / (1 - magnitudeOfDrop);
+                    dropFromATH = (athPrice - currentPrice) / athPrice * 100;
+                  } else {
+                    // Fallback when priceUsd missing — use the mathematical identity
+                    dropFromATH = Math.abs(mtfDump.h24);
+                  }
+                  if (dropFromATH >= 70) {
+                    console.log(`  ⚠️ [ATHFilter] SKIP ${pool.name}: already dumped ${dropFromATH.toFixed(0)}% from 24h ATH`);
+                    momentumSkip = true;
+                  }
                 }
               }
             } catch {}
@@ -580,6 +670,10 @@ export async function runHunter() {
                 entryTokenPrice: newPos?.entryTokenPrice,
                 binRange: newPos?.binRange ?? null,
                 decision,
+                poolTvl: pool.tvl ?? null,
+                poolVolume24h: pool.volume?.["24h"] ?? null,
+                poolFeeApr: pool.apr != null ? pool.apr * 100 : null,
+                organicScore: pool.organicScore ?? null,
               });
               recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });
               if (newPos) { hunterOpenedPosition = true; await notifyPositionOpened(newPos, decision); }
