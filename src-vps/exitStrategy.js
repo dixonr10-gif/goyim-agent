@@ -16,7 +16,7 @@ async function fetchTokenPriceChange1h(tokenMint) {
 }
 
 const EXIT_RULES = {
-  takeProfitPercent: parseFloat(process.env.TAKE_PROFIT_PERCENT) || 10,
+  takeProfitPercent: parseFloat(process.env.TAKE_PROFIT_PERCENT) || 25,
   stopLossPercent: parseFloat(process.env.STOP_LOSS_PCT ?? process.env.STOP_LOSS_PERCENT) || -6,
   maxHoldHours: parseFloat(process.env.MAX_HOLD_HOURS) || 48,
   minFeeAprToHold: parseFloat(process.env.MIN_FEE_APR_TO_HOLD) || 10,
@@ -180,13 +180,11 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
                 if (shouldRebalance && rebalanceCount < 2) {
                   console.log(`  [Rebalance] OOR kanan (pump), rebalancing range (attempt ${rebalanceCount + 1}/2)`);
                   try {
-                    const { rebalancePosition, updatePositionField } = await import("./positionManager.js");
-                    const newPosId = await rebalancePosition(position.id);
-                    if (newPosId) {
-                      updatePositionField(newPosId, "rebalanceCount", rebalanceCount + 1);
-                      updatePositionField(newPosId, "rebalancedFrom", position.id);
+                    const { rebalancePosition } = await import("./positionManager.js");
+                    const scheduled = await rebalancePosition(position.id);
+                    if (scheduled) {
                       rebalanced = true;
-                      console.log(`  ✅ [Rebalance] ${position.id} → ${newPosId}`);
+                      console.log(`  ✅ [Rebalance] ${position.id} closed, re-open queued (5min, restart-safe)`);
                     }
                   } catch (rebErr) { console.log(`  [Rebalance] failed: ${rebErr.message} — closing instead`); }
                 } else if (shouldRebalance) {

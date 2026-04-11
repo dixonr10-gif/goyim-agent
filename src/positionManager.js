@@ -507,6 +507,11 @@ export async function rebalancePosition(positionId) {
   console.log(`🔄 Rebalancing ${positionId} (pool: ${pos.pool?.slice(0, 8)}...)...`);
   await closePosition(positionId);
 
+  // OOR-right only: let the pump cool off before re-entering at the new active bin,
+  // so we don't immediately get pushed out of range again by continuing momentum.
+  console.log(`  [Rebalance] OOR-right: waiting 5min before re-open...`);
+  await new Promise(r => setTimeout(r, 300_000));
+
   const newPosId = await openPosition({
     targetPool: pos.pool,
     strategy: pos.strategy ?? "spot",

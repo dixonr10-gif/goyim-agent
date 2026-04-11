@@ -16,6 +16,7 @@ data/
 
 # Deploy script (contains VPS credentials)
 scripts/deploy.cjs
+scripts/_remote_logs.cjs
 
 # OS files
 .DS_Store

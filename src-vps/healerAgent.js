@@ -82,6 +82,13 @@ export async function runHealer() {
     // Retry any pending swaps from previous failed attempts
     try { await retryPendingSwaps(notifyMessage); } catch {}
 
+    // Drain any OOR-right rebalances whose 5-min wait has elapsed.
+    // File-backed (data/pending_reopen.json) so the wait survives PM2 restarts.
+    try {
+      const { processPendingReopens } = await import("./positionManager.js");
+      await processPendingReopens();
+    } catch (e) { console.warn("[PendingReopen] cycle error:", e.message); }
+
     const syncResult = await syncOnChainPositions();
     const manualCloses = syncResult?.manuallyClosedPositions ?? [];
 

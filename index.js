@@ -13,7 +13,7 @@ import { getWIBHour } from "./src/timeHelper.js";
 import { startDailyPnLReport } from "./src/dailyReport.js";
 
 const HUNTER_INTERVAL_MS = config.loopIntervalMs;  // default 20min
-const HEALER_INTERVAL_MS = 2 * 60 * 1000;           // fixed 2min
+const HEALER_INTERVAL_MS = 1 * 60 * 1000;           // fixed 1min
 
 console.log("🚀 Goyim DLMM Agent (Dual-Agent) starting...");
 console.log(`   Model:    ${config.openRouterModel}`);
@@ -48,10 +48,10 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// ── Emergency price check: every 1min (lightweight DexScreener only) ──────────
+// ── Emergency price check: every 30s (lightweight DexScreener only) ──────────
 setInterval(() => {
   runEmergencyPriceCheck().catch(err => console.error("[Emergency check error]", err.message));
-}, 60 * 1000);
+}, 30 * 1000);
 
 // ── Hunter: starts after 5s (let Healer settle first), runs every 30min ──────
 setTimeout(() => {
@@ -70,17 +70,18 @@ setInterval(() => {
 let _lastStrictNotif = null;
 setInterval(() => {
   const h = getWIBHour();
+  const endHour = parseInt(process.env.ACTIVE_HOURS_END) || 18;
   if (h === 14 && _lastStrictNotif !== "enter") {
     _lastStrictNotif = "enter";
     notifyMessage(
       `⚠️ <b>Strict Hours Aktif</b>\n\n🕑 14:00 - 18:00 WIB\n📉 SL: -6% → <b>-4%</b>\n🎯 TP activation: +6% → <b>+4%</b>\n📊 Trail: -3% → <b>-2%</b>\n💰 Min volume: $100k → <b>$200k</b>\n⏱ Max hold: 48h → <b>2h</b>\n🔄 OOR kanan: 35m → <b>20m</b>\n🔄 OOR kiri: 15m → <b>10m</b>\n\nBot tetap jalan tapi lebih selektif!`
     ).catch(() => {});
-  } else if (h === 18 && _lastStrictNotif !== "exit") {
+  } else if (h === endHour && _lastStrictNotif !== "exit") {
     _lastStrictNotif = "exit";
     notifyMessage(
       `✅ <b>Normal Hours</b>\n\n🕕 18:00 WIB - parameter kembali normal\n📉 SL: -6% | 🎯 TP: +6% | 📊 Trail: -3%\n💰 Min volume: $100k\n⏱ Max hold: 48h | 🔄 OOR: 35m/15m`
     ).catch(() => {});
-  } else if (h !== 14 && h !== 18) {
+  } else if (h !== 14 && h !== endHour) {
     _lastStrictNotif = null;
   }
 }, 5 * 60 * 1000);

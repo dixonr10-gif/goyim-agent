@@ -36,7 +36,28 @@
       "Bash(pscp -pw goyimAgen9t \"C:\\\\Users\\\\User\\\\Downloads\\\\goyim-agent\\\\index.js\" root@152.42.167.126:/root/goyim-agent/index.js)",
       "Bash(grep -rn \"DLMM\\\\|dlmm\\\\|LB.*Pair\\\\|lb.*pair\" --include=\"*.js\" C:/Users/User/Downloads/goyim-agent/src*)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git rm:*)",
+      "WebFetch(domain:api.dexscreener.com)",
+      "WebFetch(domain:docs.dexscreener.com)",
+      "WebFetch(domain:dlmm.datapi.meteora.ag)",
+      "Bash(curl:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:api.lpagent.io)",
+      "WebFetch(domain:lpagent.io)",
+      "WebFetch(domain:docs.lpagent.io)",
+      "WebFetch(domain:portal.lpagent.io)",
+      "WebFetch(domain:edge.meteora.ag)",
+      "WebFetch(domain:dlmm-api.meteora.ag)",
+      "Bash(pscp -pw goyimAgen9t \"src-vps/technicalAnalysis.js\" root@152.42.167.126:/root/goyim-agent/src/technicalAnalysis.js)",
+      "Bash([ -f /c/Users/User/Downloads/goyim-agent/.env ])"
     ]
   }
 }

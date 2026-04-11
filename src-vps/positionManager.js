@@ -21,6 +21,24 @@ import fs from "fs";
 import path from "path";
 const POSITIONS_FILE = path.resolve("data/open_positions.json");
 const GHOST_BL_FILE = path.resolve("data/ghost_blacklist.json");
+const PENDING_REOPEN_FILE = path.resolve("data/pending_reopen.json");
+const REOPEN_WAIT_MS = 5 * 60 * 1000; // OOR-right rebalance: wait 5min before re-entering
+
+function loadPendingReopens() {
+  try {
+    if (fs.existsSync(PENDING_REOPEN_FILE)) {
+      return JSON.parse(fs.readFileSync(PENDING_REOPEN_FILE, "utf-8"));
+    }
+  } catch (e) { console.warn("[PendingReopen] load error:", e.message); }
+  return {};
+}
+
+function savePendingReopens(data) {
+  try {
+    fs.mkdirSync(path.dirname(PENDING_REOPEN_FILE), { recursive: true });
+    fs.writeFileSync(PENDING_REOPEN_FILE, JSON.stringify(data, null, 2));
+  } catch (e) { console.error("[PendingReopen] save error:", e.message); }
+}
 
 const _ghostStrikes = {}; // { posId: { count, lastStrike } }
 
@@ -810,7 +828,7 @@ export async function rebalancePosition(positionId) {
   const closeResult = await closePosition(positionId, { reason: "REBALANCE" });
   // Use actual SOL received from close as the new deposit amount
   const solReceived = closeResult?.solReceived ?? posData.solDeployed ?? config.maxSolPerPosition;
-  console.log(`  [Rebalance] solReceived=${solReceived.toFixed?.(4) ?? solReceived} → re-opening with this amount`);
+  console.log(`  [Rebalance] solReceived=${solReceived.toFixed?.(4) ?? solReceived} → queuing re-open after 5min`);
 
   // Record the closed trade + notify Telegram (was missing — caused ghost closes)
   try {
@@ -819,25 +837,87 @@ export async function rebalancePosition(positionId) {
   } catch (e) { console.warn(`  [Rebalance] recordTradeClose failed: ${e.message}`); }
   try {
     const { notifyPositionClosed } = await import("./telegramBot.js");
-    await notifyPositionClosed(positionId, "rebalance: out of range (re-opening)", closeResult?.txSignatures ?? []);
+    await notifyPositionClosed(positionId, "rebalance: out of range (re-opening in 5min)", closeResult?.txSignatures ?? []);
   } catch (e) { console.warn(`  [Rebalance] notifyPositionClosed failed: ${e.message}`); }
 
-  const origMax = config.maxSolPerPosition;
-  config.maxSolPerPosition = solReceived;
-  try {
-    const newPosId = await openPosition({
-      targetPool: posData.pool,
-      strategy: posData.strategy ?? "spot",
-      binRange: { upper: 50 },
-      confidence: 70,
-      rationale: "auto-rebalance after OOR",
-    });
-    config.maxSolPerPosition = origMax;
-    console.log(`✅ Rebalance complete: ${positionId} → ${newPosId}`);
-    return newPosId;
-  } catch (err) {
-    config.maxSolPerPosition = origMax;
-    throw err;
+  // Persist re-open intent so the wait survives PM2 restarts. The healer cycle
+  // calls processPendingReopens() each tick and fires the open once REOPEN_WAIT_MS
+  // has elapsed since `savedAt`. Replaces an in-memory setTimeout that was lost
+  // whenever PM2 restarted mid-wait, leaving an orphaned close with no re-entry.
+  const pending = loadPendingReopens();
+  pending[positionId] = {
+    oldPositionId: positionId,
+    pool: posData.pool,
+    poolName: posData.poolName,
+    strategy: posData.strategy ?? "spot",
+    solReceived,
+    rebalanceCount: posData.rebalanceCount ?? 0,
+    savedAt: Date.now(),
+  };
+  savePendingReopens(pending);
+  console.log(`  [Rebalance] OOR-right: re-open queued (5min, restart-safe)`);
+  return true; // signal to caller: rebalance scheduled, skip plain close
+}
+
+/**
+ * Drain data/pending_reopen.json: any entry whose 5-min wait has elapsed gets
+ * re-opened, then removed. Called from healer cycle each tick. Restart-safe —
+ * if the agent crashes/restarts during the wait, the queue file persists.
+ */
+export async function processPendingReopens() {
+  const pending = loadPendingReopens();
+  const entries = Object.entries(pending);
+  if (entries.length === 0) return;
+
+  const now = Date.now();
+  for (const [key, entry] of entries) {
+    const ageMs = now - (entry.savedAt ?? 0);
+    if (ageMs < REOPEN_WAIT_MS) {
+      const remainingS = Math.ceil((REOPEN_WAIT_MS - ageMs) / 1000);
+      console.log(`  [PendingReopen] ${entry.poolName ?? entry.pool?.slice(0,8)}: ${remainingS}s remaining`);
+      continue;
+    }
+
+    // Wait elapsed — remove entry FIRST so a concurrent healer tick can't
+    // double-trigger, then attempt the re-open. On failure we DO NOT re-add
+    // the entry (would loop forever); we notify and let the user intervene.
+    const fresh = loadPendingReopens();
+    delete fresh[key];
+    savePendingReopens(fresh);
+
+    console.log(`  [PendingReopen] firing re-open for ${entry.poolName ?? entry.pool?.slice(0,8)} (waited ${(ageMs/60000).toFixed(1)}min)`);
+
+    const origMax = config.maxSolPerPosition;
+    config.maxSolPerPosition = entry.solReceived;
+    try {
+      const newPosId = await openPosition({
+        targetPool: entry.pool,
+        strategy: entry.strategy ?? "spot",
+        binRange: { upper: 50 },
+        confidence: 70,
+        rationale: "auto-rebalance after OOR (deferred re-open)",
+      });
+      // Carry rebalance lineage onto the new position
+      const newPos = openPositions.get(newPosId);
+      if (newPos) {
+        newPos.rebalanceCount = (entry.rebalanceCount ?? 0) + 1;
+        newPos.rebalancedFrom = entry.oldPositionId;
+        savePositions(openPositions);
+      }
+      console.log(`  ✅ [PendingReopen] re-opened ${entry.oldPositionId} → ${newPosId}`);
+      try {
+        const { notifyMessage } = await import("./telegramBot.js");
+        await notifyMessage(`🔁 Rebalance re-open\nPool: ${entry.poolName ?? entry.pool?.slice(0,8)}\nNew pos: ${newPosId}`);
+      } catch {}
+    } catch (err) {
+      console.warn(`  ❌ [PendingReopen] re-open failed for ${entry.oldPositionId}: ${err.message}`);
+      try {
+        const { notifyError } = await import("./telegramBot.js");
+        await notifyError(`[PendingReopen] re-open failed for ${entry.poolName ?? entry.pool?.slice(0,8)}: ${err.message?.slice(0, 200)}`);
+      } catch {}
+    } finally {
+      config.maxSolPerPosition = origMax;
+    }
   }
 }
 

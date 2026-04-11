@@ -112,7 +112,7 @@ async function fetchDexScreenerTrending() {
     console.log(`  [DexTrending] Found ${tokens.length} Solana trending tokens`);
 
     // Batch lookup: find Meteora DLMM pools for each (max 30 to widen candidate set)
-    for (const mint of tokens.slice(0, 30)) {
+    for (const mint of tokens.slice(0, 50)) {
       try {
         const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(8000) });
         const data = await res.json();
@@ -346,7 +346,7 @@ export async function runHunter() {
     // TA enrichment (RSI + EMA20) for top candidates
     console.log("\n📊 Computing TA (RSI + EMA20)...");
     const taMap = new Map();
-    const taCandidates = availablePools.slice(0, 10);
+    const taCandidates = availablePools.slice(0, 20);
     await Promise.all(taCandidates.map(async (pool) => {
       try {
         const candles = await getCandles(pool.address, pool.dexPair ?? null);
