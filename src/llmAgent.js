@@ -95,7 +95,13 @@ MINDSET: High risk, high reward. Hunt volatile pools, meme coins, new tokens.
 You are NOT conservative. APE into high APR pools.
 Minimum confidence to open: 45
 
-${brainContext ? brainContext + "\n\n" : ""}CRITICAL RULES FOR JSON RESPONSE:
+${brainContext ? brainContext + "\n\n" : ""}CHART ANALYSIS is provided for each pool. Use it as a key factor:
+- EARLY_PUMP + INCREASING volume = strong entry signal
+- PUMP_EXHAUSTION or DUMPING = avoid unless fee/TVL > 150%
+- ACCUMULATING = good entry
+- Always consider chart pattern alongside fee/TVL and score
+
+CRITICAL RULES FOR JSON RESPONSE:
 - "action": must be exactly "open", "close", "hold", or "skip"
 - "targetPool": must be the FULL 44-CHARACTER BASE58 ADDRESS (e.g. "87ESAEYJKYpARBUeUioNjgadn9K4KhzoqJ95oN53oYkJ")
 - NEVER put pool name (like "PIXEL-SOL") in targetPool field
@@ -124,6 +130,13 @@ function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContex
       const emaDir = p.ta.currentPrice >= p.ta.ema20 ? "above" : "below";
       const emaPct = p.ta.ema20 > 0 ? (((p.ta.currentPrice - p.ta.ema20) / p.ta.ema20) * 100).toFixed(1) : "0";
       line += `\n    TA: RSI ${p.ta.rsi.toFixed(1)} (${rsiLabel}) | Price vs EMA20: ${emaDir} (${emaPct}%) | Signal: ${p.ta.signal}`;
+    }
+    if (p.chart) {
+      line += `\n    CHART ANALYSIS (5m candles):`;
+      line += `\n    - Price trend: ${p.chart.priceTrend}`;
+      line += `\n    - Volume trend: ${p.chart.volumeTrend}`;
+      line += `\n    - Pattern: ${p.chart.pattern}`;
+      line += `\n    - Last 3 candles: ${p.chart.last3Candles}`;
     }
     return line;
   }).join("\n\n");

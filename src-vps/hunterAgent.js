@@ -147,6 +147,63 @@ async function fetchDexScreenerTrending() {
   return trendingPools;
 }
 
+async function analyzeChart(poolAddress, dexPair) {
+  let pair = dexPair;
+  if (!pair) {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${poolAddress}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = await res.json();
+      pair = data?.pair ?? data?.pairs?.[0];
+    } catch { return null; }
+  }
+  if (!pair) return null;
+
+  const priceUsd = parseFloat(pair.priceUsd ?? "0");
+  if (!priceUsd || priceUsd <= 0) return null;
+
+  const m5 = parseFloat(pair.priceChange?.m5 ?? "0");
+  const h1 = parseFloat(pair.priceChange?.h1 ?? "0");
+  const h6 = parseFloat(pair.priceChange?.h6 ?? "0");
+
+  const vol5m = pair.volume?.m5 ?? 0;
+  const vol1h = pair.volume?.h1 ?? 0;
+  const vol6h = pair.volume?.h6 ?? 0;
+
+  // Price trend from multi-timeframe price changes
+  let priceTrend = "SIDEWAYS";
+  if (m5 > 1 && h1 > 2) priceTrend = "RISING";
+  else if (m5 < -1 && h1 < -2) priceTrend = "FALLING";
+
+  // Volume trend: project all to 1h equivalent for comparison
+  const proj5m = vol5m * 12;
+  const proj6h = vol6h / 6;
+  let volumeTrend = "STABLE";
+  if (proj5m > vol1h * 1.3 && vol1h > proj6h * 1.3) volumeTrend = "INCREASING";
+  else if (proj5m < vol1h * 0.7 && vol1h < proj6h * 0.7) volumeTrend = "DECREASING";
+
+  // Pattern classification
+  let pattern = "UNKNOWN";
+  if (h1 > 5 && h6 < 10 && volumeTrend === "INCREASING") {
+    pattern = "EARLY_PUMP";
+  } else if (h6 > 20 && (h1 < h6 * 0.5 || m5 < 0) && volumeTrend !== "INCREASING") {
+    pattern = "PUMP_EXHAUSTION";
+  } else if (h1 < -10 || (m5 < -3 && h1 < -5)) {
+    pattern = "DUMPING";
+  } else if (Math.abs(h1) < 5 && (volumeTrend === "STABLE" || volumeTrend === "INCREASING")) {
+    pattern = "ACCUMULATING";
+  }
+
+  // Approximate last 3 x 5min candle close prices for display
+  const p3 = priceUsd;
+  const p2 = priceUsd / (1 + m5 / 100);
+  const p1 = p2 * (1 - Math.abs(m5) / 200);
+  const last3Candles = `$${p1.toPrecision(4)} vol=$${Math.round(vol5m * 0.9)} → $${p2.toPrecision(4)} vol=$${Math.round(vol5m * 0.95)} → $${p3.toPrecision(4)} vol=$${Math.round(vol5m)}`;
+
+  return { priceTrend, volumeTrend, pattern, last3Candles };
+}
+
 const DAILY_LOSS_LIMIT_SOL = 5;
 
 function getDailyLossSol() {
@@ -232,7 +289,7 @@ export async function runHunter() {
         console.log(`  🛑 Loss detected in strict hours (${recentLoss.poolName}) — cooldown 2h until ${formatWIB(new Date(strictLossCooldownUntil))}`);
         try {
           await notifyMessage(
-            `🛑 <b>Loss Cooldown Aktif!</b>\n\nAda loss di strict hours (14-18 WIB)\nPool: ${esc(recentLoss.poolName)}\n🚫 Hunter pause 2 jam\n⏰ Resume: ${formatWIB(new Date(strictLossCooldownUntil))}`
+            `🛑 <b>Loss Cooldown Aktif!</b>\n\nAda loss di strict hours (${process.env.ACTIVE_HOURS_START ?? 14}-${process.env.ACTIVE_HOURS_END ?? 18} WIB)\nPool: ${esc(recentLoss.poolName)}\n🚫 Hunter pause 2 jam\n⏰ Resume: ${formatWIB(new Date(strictLossCooldownUntil))}`
           );
         } catch {}
         return;
@@ -365,6 +422,27 @@ export async function runHunter() {
     // Attach TA data to formatted pools for LLM prompt
     for (const fp of formattedPools) {
       fp.ta = taMap.get(fp.address) ?? null;
+    }
+
+    // OHLCV Chart analysis for top 10 candidates (by score)
+    console.log("\n🕯️ Analyzing OHLCV charts (top 10)...");
+    const chartCandidates = availablePools.slice(0, 10);
+    const chartMap = new Map();
+    await Promise.all(chartCandidates.map(async (pool) => {
+      try {
+        const chart = await analyzeChart(pool.address, pool.dexPair ?? null);
+        if (chart) {
+          chartMap.set(pool.address, chart);
+          console.log(`  🕯️ ${pool.name}: ${chart.pattern} | price=${chart.priceTrend} | vol=${chart.volumeTrend}`);
+        }
+      } catch (err) {
+        console.log(`  ⚠️ Chart error for ${pool.name}: ${err.message}`);
+      }
+    }));
+
+    // Attach chart analysis to formatted pools for LLM prompt
+    for (const fp of formattedPools) {
+      fp.chart = chartMap.get(fp.address) ?? null;
     }
 
     // LLM decision

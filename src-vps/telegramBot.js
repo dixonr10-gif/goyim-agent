@@ -126,13 +126,21 @@ function registerCommands() {
       const { getLastCandidates } = await import("./poolScanner.js");
       const pools = getLastCandidates();
       if (!pools.length) { await ctx.reply("📭 No candidates yet. Wait for next Hunter scan.", mainMenu()); return; }
+      const fmtMcap = (n) => {
+        if (!n || n <= 0) return "?";
+        if (n >= 1e9) return `$${(n/1e9).toFixed(1)}B`;
+        if (n >= 1e6) return `$${(n/1e6).toFixed(1)}M`;
+        return `$${(n/1000).toFixed(0)}k`;
+      };
       let msg = `<b>🎯 Pool Candidates (${pools.length})</b>\n${"─".repeat(25)}\n\n`;
       pools.slice(0, 8).forEach((p, i) => {
         const vol = p.volume?.["24h"] ?? 0;
         const tvl = p.tvl ?? 0;
         const apr = ((p.apr ?? 0) * 100).toFixed(1);
+        const mcap = p.dexPair?.marketCap ?? p.dexPair?.fdv ?? 0;
         msg += `${i + 1}. <b>${esc(p.name)}</b>${p.uptrend ? " 🚀" : ""}\n`;
-        msg += `   Vol: $${(vol / 1000).toFixed(0)}k | TVL: $${(tvl / 1000).toFixed(0)}k | APR: ${apr}% | Organic: ${p.organicScore ?? "?"}/100\n\n`;
+        msg += `   Vol: $${(vol / 1000).toFixed(0)}k | TVL: $${(tvl / 1000).toFixed(0)}k | APR: ${apr}% | Organic: ${p.organicScore ?? "?"}/100 | MCap: ${fmtMcap(mcap)}\n`;
+        msg += `   📊 https://dexscreener.com/solana/${p.address}\n\n`;
       });
       await ctx.replyWithHTML(msg, mainMenu());
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }

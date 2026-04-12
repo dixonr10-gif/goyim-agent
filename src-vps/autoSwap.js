@@ -298,11 +298,16 @@ export async function retryPendingSwaps(notifyFn = null) {
   if (pending.length === 0) return;
   console.log(`[PendingSwap] ${pending.length} pending swap(s) to retry`);
 
+  // Track mints that exceeded the retry budget this cycle so the trailing
+  // patch step below doesn't accidentally resurrect them.
+  const dropped = new Set();
+
   for (const swap of pending) {
     swap.retries = (swap.retries ?? 0) + 1;
     if (swap.retries > 5) {
       console.log(`[PendingSwap] ${swap.tokenMint.slice(0, 8)} exceeded 5 retries — removing`);
       removePendingSwap(swap.tokenMint);
+      dropped.add(swap.tokenMint);
       continue;
     }
     try {
@@ -314,5 +319,17 @@ export async function retryPendingSwaps(notifyFn = null) {
       console.log(`[PendingSwap] Retry failed: ${err.message?.slice(0, 80)}`);
     }
   }
-  savePendingSwaps(pending);
+
+  // Persist incremented retry counters WITHOUT clobbering: re-read the file
+  // fresh (so we capture the mid-loop removePendingSwap call AND any add/remove
+  // done inside autoSwapTokensToSOL), then patch in the new retries count only
+  // for entries that still exist. Without this, the previous trailing
+  // savePendingSwaps(pending) would resurrect entries we just removed.
+  const fresh = loadPendingSwaps();
+  for (const swap of pending) {
+    if (dropped.has(swap.tokenMint)) continue;
+    const idx = fresh.findIndex(s => s.tokenMint === swap.tokenMint);
+    if (idx >= 0) fresh[idx].retries = swap.retries;
+  }
+  savePendingSwaps(fresh);
 }

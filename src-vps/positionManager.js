@@ -892,6 +892,7 @@ export async function processPendingReopens() {
     try {
       const newPosId = await openPosition({
         targetPool: entry.pool,
+        poolName: entry.poolName,
         strategy: entry.strategy ?? "spot",
         binRange: { upper: 50 },
         confidence: 70,
@@ -904,6 +905,20 @@ export async function processPendingReopens() {
         newPos.rebalancedFrom = entry.oldPositionId;
         savePositions(openPositions);
       }
+      // Create trade memory record so recordTradeClose doesn't fall into its
+      // "missing record" branch (which stamps poolName="unknown" and corrupts
+      // per-token blacklist loss tracking). Mirrors Hunter's open flow.
+      try {
+        const { recordTradeOpen } = await import("./tradeMemory.js");
+        recordTradeOpen({
+          positionId: newPosId,
+          pool: entry.pool,
+          poolName: entry.poolName,
+          strategy: entry.strategy ?? "spot",
+          solDeployed: entry.solReceived,
+          decision: { confidence: 70, rationale: "auto-rebalance after OOR (deferred re-open)" },
+        });
+      } catch (e) { console.warn(`  [PendingReopen] recordTradeOpen failed: ${e.message}`); }
       console.log(`  ✅ [PendingReopen] re-opened ${entry.oldPositionId} → ${newPosId}`);
       try {
         const { notifyMessage } = await import("./telegramBot.js");

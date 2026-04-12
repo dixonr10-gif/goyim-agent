@@ -64,6 +64,15 @@ export function recordTokenLoss(poolName) {
   const syms = extractSymbols(poolName).filter(s => !QUOTE_TOKENS.has(s));
   if (syms.length === 0) return;
   const sym = syms[0];
+  // Guard against the "unknown" fallback from tradeMemory.js — otherwise the
+  // loss gets attributed to a fake "UNKNOWN" pseudo-token instead of the real
+  // token, corrupting per-token counts and eventually auto-blacklisting
+  // nothing useful. Upstream fix is in positionManager.js (processPendingReopens
+  // now passes poolName through); this is defense-in-depth.
+  if (sym === "UNKNOWN") {
+    console.log(`  [AutoBlacklist] Skipping loss record — poolName was "unknown" (upstream data gap)`);
+    return;
+  }
   const losses = loadLosses();
   const prev = losses[sym]?.count ?? 0;
   const newCount = prev + 1;

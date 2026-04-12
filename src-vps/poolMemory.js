@@ -102,14 +102,51 @@ export function getPoolScoreAdjustment(poolAddress) {
   const mem = getPoolMemory(poolAddress);
   if (!mem || mem.decided < 2) return { adjustment: 0, reason: null, mem: null };
 
-  if (mem.lossStreak >= 2) {
+  // Hard block only at loss streak ≥ 3
+  if (mem.lossStreak >= 3) {
     return { adjustment: -999, reason: `loss streak ${mem.lossStreak}x`, mem };
   }
-  if (mem.winRate > 60) {
-    return { adjustment: 5, reason: `WR ${mem.winRate}%`, mem };
+
+  let adjustment = 0;
+  const reasons = [];
+
+  // Loss streak tier (1x/2x only — 3x is blocked above)
+  if (mem.lossStreak === 2) {
+    adjustment -= 15;
+    reasons.push(`streak 2x -15`);
+  } else if (mem.lossStreak === 1) {
+    adjustment -= 5;
+    reasons.push(`streak 1x -5`);
   }
-  if (mem.winRate < 30) {
-    return { adjustment: -10, reason: `WR ${mem.winRate}%`, mem };
+
+  // Win rate tier (strongest match wins)
+  if (mem.winRate != null) {
+    if (mem.winRate < 30) {
+      adjustment -= 20;
+      reasons.push(`WR ${mem.winRate}% -20`);
+    } else if (mem.winRate < 40) {
+      adjustment -= 10;
+      reasons.push(`WR ${mem.winRate}% -10`);
+    } else if (mem.winRate > 70) {
+      adjustment += 15;
+      reasons.push(`WR ${mem.winRate}% +15`);
+    } else if (mem.winRate > 60) {
+      adjustment += 10;
+      reasons.push(`WR ${mem.winRate}% +10`);
+    }
   }
-  return { adjustment: 0, reason: null, mem };
+
+  // Avg PnL tier
+  if (typeof mem.avgPnlPct === "number") {
+    if (mem.avgPnlPct > 3) {
+      adjustment += 10;
+      reasons.push(`avgPnl +${mem.avgPnlPct}% +10`);
+    } else if (mem.avgPnlPct < 0) {
+      adjustment -= 5;
+      reasons.push(`avgPnl ${mem.avgPnlPct}% -5`);
+    }
+  }
+
+  if (adjustment === 0) return { adjustment: 0, reason: null, mem };
+  return { adjustment, reason: reasons.join(", "), mem };
 }
