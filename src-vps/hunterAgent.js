@@ -400,23 +400,81 @@ export async function runHunter() {
       }
       return true;
     });
-    const filteredOutOpen = nonBlacklisted.length - availablePools.length;
+    const filteredOutOpen = feeFiltered.length - availablePools.length;
     if (filteredOutOpen > 0) console.log(`  [Hunter] Filtered out ${filteredOutOpen} pool(s) — open positions/tokens`);
     if (availablePools.length === 0) { console.log("⚠️ All pools already have open positions."); return; }
 
+    // ── Pre-LLM hard filters: momentum, dump, pump exhaustion, ATH ────────
+    // These MUST run before LLM sees the pool list — LLM cannot override.
+    console.log("\n🔍 Pre-LLM momentum filters...");
+    const pumpThreshold = parseFloat(process.env.SKIP_PUMP_1H_THRESHOLD) || 30;
+    const preFilteredPools = [];
+    for (const pool of availablePools) {
+      const sym = (pool.name ?? "").split(/[-\/]/)[0];
+      try {
+        const mtf = await fetchMultiTimeframePriceChange(pool.address);
+        if (mtf) {
+          // 1h dump check
+          if (mtf.h1 !== null && mtf.h1 < -5) {
+            console.log(`  [PreFilter] ${sym} SKIP — 1h ${mtf.h1.toFixed(1)}% (dump zone)`);
+            continue;
+          }
+          // 1h pump too late
+          if (mtf.h1 !== null && mtf.h1 > pumpThreshold) {
+            console.log(`  [PreFilter] ${sym} SKIP — 1h +${mtf.h1.toFixed(1)}% > ${pumpThreshold}% (too late)`);
+            continue;
+          }
+          // h6 pump exhaustion (skip for tokens < 6h old)
+          if (mtf.h6 !== null && mtf.h6 > 170) {
+            const _ca = pool.created_at ?? pool.createdAt ?? pool.creation_time ?? null;
+            const _age = _ca ? (Date.now() - new Date(_ca).getTime()) / 3_600_000 : null;
+            if (_age === null || _age >= 6) {
+              console.log(`  [PreFilter] ${sym} SKIP — h6 +${mtf.h6.toFixed(0)}% > 170% (pump exhaustion)`);
+              continue;
+            }
+          }
+          // h6 crash check
+          if (mtf.h6 !== null && mtf.h6 < -70) {
+            console.log(`  [PreFilter] ${sym} SKIP — h6 ${mtf.h6.toFixed(0)}% (crashed)`);
+            continue;
+          }
+          // ATH dump filter: price < 30% of estimated 24h high
+          if (mtf.priceUsd) {
+            let estHigh = mtf.priceUsd;
+            for (const pct of [mtf.m5, mtf.h1, mtf.h6, mtf.h24]) {
+              if (pct !== null && pct !== 0) {
+                const implied = mtf.priceUsd / (1 + pct / 100);
+                if (implied > estHigh) estHigh = implied;
+              }
+            }
+            const drop = (estHigh - mtf.priceUsd) / estHigh * 100;
+            if (drop >= 70) {
+              console.log(`  [PreFilter] ${sym} SKIP — down ${drop.toFixed(0)}% from 24h high`);
+              continue;
+            }
+          }
+        }
+        // Store mtf data on pool for post-LLM strategy selection (avoids re-fetch)
+        pool._mtf = mtf;
+      } catch {}
+      preFilteredPools.push(pool);
+    }
+    console.log(`  [PreFilter] ${availablePools.length - preFilteredPools.length} pool(s) removed, ${preFilteredPools.length} passed`);
+    if (preFilteredPools.length === 0) { console.log("⚠️ All pools failed momentum filters."); return; }
+
     // Market analysis
     console.log("\n📈 Analyzing pools...");
-    const poolAnalyses = await Promise.all(availablePools.map(analyzePool));
+    const poolAnalyses = await Promise.all(preFilteredPools.map(analyzePool));
     poolAnalyses.forEach(a =>
       console.log(`  ${a.poolName}: score=${a.opportunityScore} | vol=${a.volatility.level} | trend=${a.trend.direction}`)
     );
 
-    const formattedPools = formatPoolsForLLM(availablePools);
+    const formattedPools = formatPoolsForLLM(preFilteredPools);
 
     // TA enrichment (RSI + EMA20) for top candidates
     console.log("\n📊 Computing TA (RSI + EMA20)...");
     const taMap = new Map();
-    const taCandidates = availablePools.slice(0, 20);
+    const taCandidates = preFilteredPools.slice(0, 20);
     await Promise.all(taCandidates.map(async (pool) => {
       try {
         const candles = await getCandles(pool.address, pool.dexPair ?? null);
@@ -439,7 +497,7 @@ export async function runHunter() {
 
     // OHLCV Chart analysis for top 10 candidates (by score)
     console.log("\n🕯️ Analyzing OHLCV charts (top 10)...");
-    const chartCandidates = availablePools.slice(0, 10);
+    const chartCandidates = preFilteredPools.slice(0, 10);
     const chartMap = new Map();
     await Promise.all(chartCandidates.map(async (pool) => {
       try {
@@ -548,59 +606,19 @@ export async function runHunter() {
               console.log(`  [DexTrending] ${pool.name} is trending → confidence +10`);
             }
 
-            // Dump filter — skip tokens already crashed
-            const priceChange1h = await fetchPriceChange1h(pool.address);
-            let momentumSkip = false;
-            try {
-              const mtfDump = await fetchMultiTimeframePriceChange(pool.address);
-              if (mtfDump) {
-                if (mtfDump.h6 !== null && mtfDump.h6 < -70) {
-                  console.log(`  [DumpFilter] ${pool.name} dumped ${mtfDump.h6.toFixed(0)}% 6h → skip`);
-                  momentumSkip = true;
-                } else if (mtfDump.h1 !== null && mtfDump.h1 < -20) {
-                  console.log(`  [DumpFilter] ${pool.name} dumping ${mtfDump.h1.toFixed(0)}% 1h → skip`);
-                  momentumSkip = true;
-                } else if (mtfDump.priceUsd) {
-                  // ── ATH dump filter — skip tokens already dumped >=70% from 24h high ──
-                  // Estimate the 24h high from all timeframe snapshots: the implied past
-                  // price at each interval is currentPrice / (1 + change/100). The max of
-                  // these is a lower bound on the actual 24h high. Using h24 alone misses
-                  // pumps that happened *within* the 24h window (net h24 can be 0% while
-                  // the token peaked 10x above current price mid-window).
-                  const cur = mtfDump.priceUsd;
-                  let estimatedHigh = cur;
-                  for (const pct of [mtfDump.m5, mtfDump.h1, mtfDump.h6, mtfDump.h24]) {
-                    if (pct !== null && pct !== 0) {
-                      const impliedPast = cur / (1 + pct / 100);
-                      if (impliedPast > estimatedHigh) estimatedHigh = impliedPast;
-                    }
-                  }
-                  const dropFromHigh = (estimatedHigh - cur) / estimatedHigh * 100;
-                  if (dropFromHigh >= 70) {
-                    console.log(`  ⚠️ [ATHFilter] SKIP ${pool.name}: down ${dropFromHigh.toFixed(0)}% from estimated 24h high ($${estimatedHigh.toPrecision(4)} → $${cur.toPrecision(4)})`);
-                    momentumSkip = true;
-                  }
-                }
-              }
-            } catch {}
-
-            // Momentum-based strategy selection + pump skip
-            const pumpThreshold = parseFloat(process.env.SKIP_PUMP_1H_THRESHOLD) || 30;
-            if (!momentumSkip && priceChange1h !== null) {
-              if (priceChange1h < -5) {
-                console.log(`  [Strategy] SKIP - token turun ${priceChange1h.toFixed(1)}% 1h`);
-                momentumSkip = true;
-              } else if (priceChange1h > pumpThreshold) {
-                console.log(`  [PumpFilter] SKIP - ${pool.name} already pumped +${priceChange1h.toFixed(1)}% 1h (threshold ${pumpThreshold}%) — instant OOR risk`);
-                momentumSkip = true;
-              } else if (priceChange1h > 2) {
-                decision.strategy = "bidask";
-                console.log(`  [Strategy] BidAsk dipilih - token naik +${priceChange1h.toFixed(1)}% 1h`);
-              } else {
-                decision.strategy = "spot";
-                console.log(`  [Strategy] Spot dipilih - token sideways ${priceChange1h >= 0 ? "+" : ""}${priceChange1h.toFixed(1)}% 1h`);
-              }
+            // Strategy selection using cached _mtf from pre-LLM filter (no re-fetch)
+            const cachedMtf = rawPool?._mtf ?? null;
+            const priceChange1h = cachedMtf?.h1 ?? null;
+            if (priceChange1h !== null && priceChange1h >= 5 && priceChange1h <= 20) {
+              decision.strategy = "bidask";
+              console.log(`  [Strategy] BidAsk dipilih — 1h +${priceChange1h.toFixed(1)}% (range 5-20%)`);
+            } else {
+              decision.strategy = "spot";
+              console.log(`  [Strategy] Spot dipilih — 1h ${priceChange1h !== null ? ((priceChange1h >= 0 ? "+" : "") + priceChange1h.toFixed(1) + "%") : "N/A"}`);
             }
+
+            // momentumSkip: set by scoring, poolMem, TA — gates the open path
+            let momentumSkip = false;
 
             // ── Dynamic bin count based on volatility ──────────────────
             const absChange1h = Math.abs(priceChange1h ?? 0);
