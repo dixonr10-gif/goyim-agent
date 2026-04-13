@@ -629,8 +629,18 @@ export async function runHunter() {
               try {
                 const mtf = await fetchMultiTimeframePriceChange(pool.address);
                 if (mtf) {
-                  if (mtf.h6 !== null && mtf.h6 > 170) momentumScore = 0;
-                  else if (mtf.m5 !== null && mtf.h1 !== null) {
+                  // Pump exhaustion: h6 > 170% → score 0, but skip for tokens < 6h old (h6 data unreliable)
+                  const _createdAt = rawPool?.created_at ?? rawPool?.createdAt ?? rawPool?.creation_time ?? null;
+                  const _ageHours = _createdAt ? (Date.now() - new Date(_createdAt).getTime()) / 3_600_000 : null;
+                  if (mtf.h6 !== null && mtf.h6 > 170) {
+                    if (_ageHours !== null && _ageHours < 6) {
+                      console.log(`  [Momentum] ${pool.name}: token age ${_ageHours.toFixed(1)}h < 6h → pump exhaustion check skipped (h6=${mtf.h6.toFixed(0)}%)`);
+                    } else {
+                      console.log(`  [Momentum] ${pool.name}: token age ${_ageHours?.toFixed(1) ?? "?"}h → pump exhaustion applied (h6=${mtf.h6.toFixed(0)}%)`);
+                      momentumScore = 0;
+                    }
+                  }
+                  if (momentumScore > 0 && mtf.m5 !== null && mtf.h1 !== null) {
                     if (mtf.m5 > 0 && mtf.h1 > 0) momentumScore = 80;
                     else if (mtf.m5 < 0 && mtf.h1 > 0) momentumScore = 60;
                     else if (mtf.m5 > 0 && mtf.h1 < 0) momentumScore = 40;
