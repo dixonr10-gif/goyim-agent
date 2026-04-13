@@ -441,9 +441,9 @@ export async function runHunter() {
           continue;
         }
       }
-      // h6 crash check
-      if (Number.isFinite(h6) && h6 < -70) {
-        console.log(`  [PreFilter] ${sym} SKIP — h6 ${h6.toFixed(0)}% (crashed)`);
+      // h6 massive dump check (more reliable than ATH calc for pump-dump tokens)
+      if (Number.isFinite(h6) && h6 < -50) {
+        console.log(`  [PreFilter] ${sym} SKIP — h6 ${h6.toFixed(0)}% (massive dump)`);
         continue;
       }
       // ATH dump filter: estimate 24h high from all timeframe snapshots, skip if down >= 70%
