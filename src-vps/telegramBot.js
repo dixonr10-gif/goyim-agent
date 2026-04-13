@@ -321,10 +321,20 @@ function registerCommands() {
   bot.command("blacklist", async (ctx) => {
     try {
       const args = ctx.message.text.split(/\s+/).slice(1);
-      const { getBlacklist, getTokenLosses, manualBlacklist } = await import("./blacklistManager.js");
+      const { getBlacklist, getTokenLosses, manualBlacklist, unblacklistToken } = await import("./blacklistManager.js");
+
+      // /blacklist remove SYMBOL → unblacklist
+      const subcmd = args[0]?.toLowerCase();
+      if (subcmd === "remove" || subcmd === "delete" || subcmd === "rm") {
+        const sym = args[1]?.toUpperCase();
+        if (!sym) { await ctx.reply("Usage: /blacklist remove SYMBOL"); return; }
+        const ok = unblacklistToken(sym);
+        await ctx.reply(ok ? `✅ ${sym} dihapus dari blacklist` : `⚠️ ${sym} tidak ditemukan di blacklist`);
+        return;
+      }
 
       // /blacklist add SYMBOL, /blacklist SYMBOL, or /blacklist CA
-      const addArg = args[0]?.toLowerCase() === "add" ? args[1] : args[0];
+      const addArg = subcmd === "add" ? args[1] : args[0];
       if (addArg && !/^(show|list)$/i.test(addArg)) {
         let symbol = addArg.toUpperCase();
         const CA_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -376,7 +386,7 @@ function registerCommands() {
       if (watchEntries.length > 0) {
         msg += `\n<b>👀 Watch:</b> ${watchEntries.sort((a, b) => b[1] - a[1]).map(([s, c]) => `${s}: ${c}L`).join(", ")}\n`;
       }
-      msg += `\n<i>Tambah: /blacklist add SYMBOL</i>`;
+      msg += `\n<i>Tambah: /blacklist add SYMBOL\nHapus: /blacklist remove SYMBOL</i>`;
       await ctx.replyWithHTML(msg, mainMenu());
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }
   });
