@@ -406,46 +406,70 @@ export async function runHunter() {
 
     // ── Pre-LLM hard filters: pump exhaustion, crash, ATH ────────────────
     // These MUST run before LLM sees the pool list — LLM cannot override.
+    // Primary source: pool.dexPair (from scanner enrichment).
+    // Fallback: fetchMultiTimeframePriceChange API (for pools without dexPair).
     console.log("\n🔍 Pre-LLM momentum filters...");
     const preFilteredPools = [];
     for (const pool of availablePools) {
       const sym = (pool.name ?? "").split(/[-\/]/)[0];
-      try {
-        const mtf = await fetchMultiTimeframePriceChange(pool.address);
-        if (mtf) {
-          // h6 pump exhaustion (skip for tokens < 6h old)
-          if (mtf.h6 !== null && mtf.h6 > 170) {
-            const _ca = pool.created_at ?? pool.createdAt ?? pool.creation_time ?? null;
-            const _age = _ca ? (Date.now() - new Date(_ca).getTime()) / 3_600_000 : null;
-            if (_age === null || _age >= 6) {
-              console.log(`  [PreFilter] ${sym} SKIP — h6 +${mtf.h6.toFixed(0)}% > 170% (pump exhaustion)`);
-              continue;
-            }
+
+      // Get price data: prefer dexPair (already cached), fallback to API
+      let m5 = NaN, h1 = NaN, h6 = NaN, h24 = NaN, priceUsd = NaN;
+      const dp = pool.dexPair;
+      if (dp) {
+        m5  = parseFloat(dp.priceChange?.m5 ?? "NaN");
+        h1  = parseFloat(dp.priceChange?.h1 ?? "NaN");
+        h6  = parseFloat(dp.priceChange?.h6 ?? "NaN");
+        h24 = parseFloat(dp.priceChange?.h24 ?? "NaN");
+        priceUsd = parseFloat(dp.priceUsd ?? "NaN");
+      } else {
+        try {
+          const mtf = await fetchMultiTimeframePriceChange(pool.address);
+          if (mtf) {
+            m5 = mtf.m5 ?? NaN; h1 = mtf.h1 ?? NaN; h6 = mtf.h6 ?? NaN;
+            h24 = mtf.h24 ?? NaN; priceUsd = mtf.priceUsd ?? NaN;
           }
-          // h6 crash check
-          if (mtf.h6 !== null && mtf.h6 < -70) {
-            console.log(`  [PreFilter] ${sym} SKIP — h6 ${mtf.h6.toFixed(0)}% (crashed)`);
-            continue;
-          }
-          // ATH dump filter: price < 30% of estimated 24h high
-          if (mtf.priceUsd) {
-            let estHigh = mtf.priceUsd;
-            for (const pct of [mtf.m5, mtf.h1, mtf.h6, mtf.h24]) {
-              if (pct !== null && pct !== 0) {
-                const implied = mtf.priceUsd / (1 + pct / 100);
-                if (implied > estHigh) estHigh = implied;
-              }
-            }
-            const drop = (estHigh - mtf.priceUsd) / estHigh * 100;
-            if (drop >= 70) {
-              console.log(`  [PreFilter] ${sym} SKIP — down ${drop.toFixed(0)}% from 24h high`);
-              continue;
-            }
+        } catch {}
+      }
+
+      // h6 pump exhaustion (skip for tokens < 6h old)
+      if (Number.isFinite(h6) && h6 > 170) {
+        const _ca = pool.created_at ?? pool.createdAt ?? pool.creation_time ?? null;
+        const _age = _ca ? (Date.now() - new Date(_ca).getTime()) / 3_600_000 : null;
+        if (_age === null || _age >= 6) {
+          console.log(`  [PreFilter] ${sym} SKIP — h6 +${h6.toFixed(0)}% > 170% (pump exhaustion)`);
+          continue;
+        }
+      }
+      // h6 crash check
+      if (Number.isFinite(h6) && h6 < -70) {
+        console.log(`  [PreFilter] ${sym} SKIP — h6 ${h6.toFixed(0)}% (crashed)`);
+        continue;
+      }
+      // ATH dump filter: estimate 24h high from all timeframe snapshots, skip if down >= 70%
+      if (Number.isFinite(priceUsd) && priceUsd > 0) {
+        let estHigh = priceUsd;
+        for (const pct of [m5, h1, h6, h24]) {
+          if (Number.isFinite(pct) && pct !== 0) {
+            const implied = priceUsd / (1 + pct / 100);
+            if (implied > estHigh) estHigh = implied;
           }
         }
-        // Store mtf data on pool for post-LLM strategy selection (avoids re-fetch)
-        pool._mtf = mtf;
-      } catch {}
+        const drop = (estHigh - priceUsd) / estHigh * 100;
+        if (drop >= 70) {
+          console.log(`  [PreFilter] ${sym} SKIP — down ${drop.toFixed(0)}% from 24h high ($${estHigh.toPrecision(3)} → $${priceUsd.toPrecision(3)})`);
+          continue;
+        }
+      }
+
+      // Cache parsed mtf for post-LLM strategy selection
+      pool._mtf = {
+        m5: Number.isFinite(m5) ? m5 : null,
+        h1: Number.isFinite(h1) ? h1 : null,
+        h6: Number.isFinite(h6) ? h6 : null,
+        h24: Number.isFinite(h24) ? h24 : null,
+        priceUsd: Number.isFinite(priceUsd) ? priceUsd : null,
+      };
       preFilteredPools.push(pool);
     }
     console.log(`  [PreFilter] ${availablePools.length - preFilteredPools.length} pool(s) removed, ${preFilteredPools.length} passed`);
