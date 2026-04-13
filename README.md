@@ -13,7 +13,7 @@ AI-powered autonomous liquidity provision agent for **Meteora DLMM** on Solana. 
 - **Dynamic Bin Count** — Auto-adjusts 50 / 70 / 90 / 110 bins based on 1h price volatility (low → narrow, high → wide)
 - **RSI Filter** — Skips pools where RSI > 80 (overbought / dump risk) or RSI < 30 (oversold / falling knife) before opening
 - **Pool Memory** — Per-pool win rate tracking with bonus/penalty scoring; avoids repeat losers, boosts proven winners
-- **Strict Hours Mode (14-18 WIB)** — Tighter SL (-4%), TP (+4%), trailing trail (-2%), higher min volume ($200k), shorter max hold (2h), and 2h auto-cooldown after any loss in window
+- **Strict Hours Mode (14-20 WIB)** — Tighter SL (-4%), TP (+4%), trailing trail (-2%), higher min volume ($200k), shorter max hold (2h), and 2h auto-cooldown after any loss in window
 - **LPAgent PnL Integration** — Accurate USD-precise PnL including unclaimed + claimed fees, replacing approximation-based PnL
 - **Blacklist Auto-Decay** — Temporary blacklisted tokens auto-expire after 7 days (permanent blacklist preserved)
 - **Meridian-style Lessons** — Per-trade observation captured (max 20 retained), surfaced to LLM via prompt context
@@ -30,7 +30,6 @@ AI-powered autonomous liquidity provision agent for **Meteora DLMM** on Solana. 
 - **Telegram Bot** — Full control & monitoring via Telegram with 20+ commands
 - **Free-Form Chat** — Chat naturally with the agent about positions, market, strategy
 - **CA Scanner** — Send any contract address to Telegram for instant token analysis
-- **Emergency Price Check** — Every 1 minute lightweight price monitor for crash protection
 - **Watchdog** — Auto-restarts Healer if it becomes unresponsive
 - **Daily P&L Report** — Automated daily performance summary via Telegram
 - **Cooldown System** — Per-token cooldown after close/failure to avoid re-entering too fast
@@ -193,7 +192,7 @@ Semua konfigurasi ada di file `.env`. Copy dari `.env.example` dan sesuaikan.
 
 | Variable | Default | Deskripsi |
 |---|---|---|
-| `MAX_SOL_PER_POSITION` | `5` | Maksimum SOL per posisi (cap dari dynamic sizing) |
+| `MAX_SOL_PER_POSITION` | `8` | Maksimum SOL per posisi (cap dari dynamic sizing) |
 | `MAX_OPEN_POSITIONS` | `6` | Maksimum posisi terbuka bersamaan |
 | `LOOP_INTERVAL_MS` | `1080000` | Interval Hunter scan (18 menit) |
 | `MAX_HOLD_HOURS` | `3` | Maksimum waktu hold posisi (jam) |
@@ -213,12 +212,12 @@ Semua konfigurasi ada di file `.env`. Copy dari `.env.example` dan sesuaikan.
 
 ### Strict Hours Mode
 
-Periode strict hours mengaktifkan filter trading yang lebih ketat untuk menghindari volatilitas tinggi. Default 14:00–18:00 WIB. Saat aktif: SL -4%, TP +4%, trailing trail -2%, min volume $200k, max hold 2h, dan auto-cooldown 2 jam jika ada loss di window ini.
+Periode strict hours mengaktifkan filter trading yang lebih ketat untuk menghindari volatilitas tinggi. Default 14:00–20:00 WIB. Saat aktif: SL -4%, TP +4%, trailing trail -2%, min volume $200k, max hold 2h, dan auto-cooldown 2 jam jika ada loss di window ini.
 
 | Variable | Default | Deskripsi |
 |---|---|---|
 | `STRICT_HOURS_START` | `14` | Jam mulai strict mode (WIB, 0-23) |
-| `STRICT_HOURS_END` | `18` | Jam selesai strict mode (WIB, 0-23) |
+| `STRICT_HOURS_END` | `20` | Jam selesai strict mode (WIB, 0-23) |
 
 ### Pool Filters
 
@@ -320,7 +319,7 @@ Periode strict hours mengaktifkan filter trading yang lebih ketat untuk menghind
                     index.js (Orchestrator)
                    /                       \
           Hunter Agent                 Healer Agent
-        (every 30 min)               (every 2 min)
+     (10min / 30min strict)          (every 1 min)
               |                            |
     1. Learn (brain/patterns)    1. Sync on-chain positions
     2. Scan 80+ pools (3 src):   2. Calculate real-time PnL
@@ -340,9 +339,9 @@ Periode strict hours mengaktifkan filter trading yang lebih ketat untuk menghind
                                  7. Post-trade lessons (Meridian)
 ```
 
-**Hunter flow (30 min loop):** scan 80+ pools → pre-filter (vol/TVL/APR/age) → DexScreener enrich (organic score, multi-timeframe trend) → market analysis (score 0-100) → **RSI filter** (skip > 80 / < 30) → LLM decision with full context → **Pool Memory check** (skip if loss streak ≥ 2x on same pool) → token safety + MEV/bundler check → dynamic position sizing → **open position**.
+**Hunter flow (10min / 30min strict):** scan 80+ pools → pre-filter (vol/TVL/APR/age) → DexScreener enrich (organic score, multi-timeframe trend) → market analysis (score 0-100) → **RSI filter** (skip > 80 / < 30) → LLM decision with full context → **Pool Memory check** (skip if loss streak ≥ 2x on same pool) → token safety + MEV/bundler check → dynamic position sizing → **open position**.
 
-**Healer flow (2 min loop):** sync on-chain state → fetch USD-precise PnL via LPAgent (includes unclaimed + claimed fees) → evaluate exit rules in priority order (SL → TP → OOR → fee TP → trailing HWM update → max hold → fee APR floor) → if any triggers, **close position** + auto-swap residual tokens → record `exitReason` + final `binRange` → post-trade LLM debrief.
+**Healer flow (1 min loop):** sync on-chain state → fetch USD-precise PnL via LPAgent (includes unclaimed + claimed fees) → evaluate exit rules in priority order (SL → TP → OOR → fee TP → trailing HWM update → max hold → fee APR floor) → if any triggers, **close position** + auto-swap residual tokens → record `exitReason` + final `binRange` → post-trade LLM debrief.
 
 ### Hunter Agent — Entry Logic
 
@@ -357,33 +356,31 @@ Periode strict hours mengaktifkan filter trading yang lebih ketat untuk menghind
 
 | Total Score | SOL |
 |---|---|
-| > 85 | 5 SOL |
-| 75-85 | 4 SOL |
-| 65-74 | 4 SOL |
-| 50-64 | 3 SOL |
-| 40-49 | 2 SOL |
+| > 85 | 8 SOL |
+| 75-85 | 6 SOL |
+| 65-74 | 5 SOL |
+| 50-64 | 4 SOL |
+| 40-49 | 3 SOL |
 | < 40 | SKIP |
 
 9. **Execute** — Opens DLMM position with dynamic bin count & strategy (spot/bidask).
 
 ### Healer Agent — Exit Logic
 
-Checks every 2 minutes, in priority order:
+Checks every 1 minute, in priority order:
 
 1. **Out of Range** — Position bins are outside price range -> 30-60min grace period, then close
 2. **Fee Take Profit** — Claimable fees >= 15% of deployed SOL -> close
-3. **Stop Loss** — PnL <= -6% -> close immediately
-4. **Take Profit** — PnL >= +8% -> close
+3. **Tiered Stop Loss** — Tier 1: -6% (2-tick confirm), Tier 2: -10% hard SL (instant), Tier 3: -15% panic SL (instant, SOL-fallback if USD unavailable)
+4. **Take Profit** — PnL >= +25% -> close
 5. **Trailing TP** — If PnL ever hits +6%, trail 3% from peak. If PnL drops 3% from highest -> close
-6. **Max Hold** — Position older than 3 hours -> close
+6. **Max Hold** — Position older than 48h (2h strict) -> close
 7. **Fee APR Floor** — Pool fee APR < 10% -> close (pool dried up)
-8. **Emergency Price Check** — Every 1 min, if 1h price drop > 15% -> instant close
 
 ### Self-Learning System
 
 - **Post-Trade Analyzer** — LLM debriefs each closed trade, extracts lessons -> `data/lessons.json`
 - **Pattern Learner** — Discovers winning conditions every 5 trades -> `data/patterns.json`
-- **Self-Improving Prompt** — Rewrites agent decision rules every 6h -> `data/agent_brain.json`
 - **Threshold Evolver** — Auto-adjusts .env filter thresholds based on win rate + avg PnL
 - **Pool Memory** — Tracks per-pool performance, boosts/penalizes future scoring
 
@@ -410,7 +407,6 @@ goyim-agent/
 │   ├── tradeMemory.js          # Trade history, stats, blacklist/whitelist
 │   ├── postTradeAnalyzer.js    # LLM debrief per closed trade
 │   ├── patternLearner.js       # Discovers winning patterns from trade history
-│   ├── selfImprovingPrompt.js  # Auto-rewrites agent brain rules
 │   ├── thresholdEvolver.js     # Auto-adjusts .env thresholds from stats
 │   ├── poolMemory.js           # Per-pool performance tracking
 │   ├── telegramBot.js          # Telegram interface (commands + chat)
@@ -457,7 +453,7 @@ pm2 logs goyim-agent --lines 50    # Cek error
 pm2 restart goyim-agent            # Restart
 ```
 
-### Hunter STALE warning (saat strict hours 14-18 WIB)
+### Hunter STALE warning (saat strict hours 14-20 WIB)
 **Normal behavior** — Hunter di-pause 2 jam setelah loss di strict hours window. Cek logs:
 ```bash
 pm2 logs goyim-agent --lines 50 | grep "Strict loss cooldown"
