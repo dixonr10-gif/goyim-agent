@@ -547,29 +547,24 @@ export async function runHunter() {
                 } else if (mtfDump.h1 !== null && mtfDump.h1 < -20) {
                   console.log(`  [DumpFilter] ${pool.name} dumping ${mtfDump.h1.toFixed(0)}% 1h → skip`);
                   momentumSkip = true;
-                } else if (mtfDump.h24 !== null && mtfDump.h24 < 0) {
-                  // ── ATH dump filter — skip tokens already dumped >=70% from 24h ATH ──
-                  // Uses h24 price change as proxy for 24h high (the "ATH within window").
-                  // Per spec formula:
-                  //   ath = currentPrice / (1 - magnitudeOfDrop)
-                  //   dropFromATH% = (ath - current) / ath * 100
-                  // This mathematically simplifies to |h24| when h24 is negative, but we
-                  // keep it explicit so future maintainers can swap in a real ATH source.
-                  const magnitudeOfDrop = -mtfDump.h24 / 100;   // e.g. -75 → 0.75
-                  let dropFromATH;
-                  if (magnitudeOfDrop >= 0.99) {
-                    // Avoid divide-by-near-zero for near-total collapses (h24 <= -99%)
-                    dropFromATH = 99;
-                  } else if (mtfDump.priceUsd) {
-                    const currentPrice = mtfDump.priceUsd;
-                    const athPrice = currentPrice / (1 - magnitudeOfDrop);
-                    dropFromATH = (athPrice - currentPrice) / athPrice * 100;
-                  } else {
-                    // Fallback when priceUsd missing — use the mathematical identity
-                    dropFromATH = Math.abs(mtfDump.h24);
+                } else if (mtfDump.priceUsd) {
+                  // ── ATH dump filter — skip tokens already dumped >=70% from 24h high ──
+                  // Estimate the 24h high from all timeframe snapshots: the implied past
+                  // price at each interval is currentPrice / (1 + change/100). The max of
+                  // these is a lower bound on the actual 24h high. Using h24 alone misses
+                  // pumps that happened *within* the 24h window (net h24 can be 0% while
+                  // the token peaked 10x above current price mid-window).
+                  const cur = mtfDump.priceUsd;
+                  let estimatedHigh = cur;
+                  for (const pct of [mtfDump.m5, mtfDump.h1, mtfDump.h6, mtfDump.h24]) {
+                    if (pct !== null && pct !== 0) {
+                      const impliedPast = cur / (1 + pct / 100);
+                      if (impliedPast > estimatedHigh) estimatedHigh = impliedPast;
+                    }
                   }
-                  if (dropFromATH >= 70) {
-                    console.log(`  ⚠️ [ATHFilter] SKIP ${pool.name}: already dumped ${dropFromATH.toFixed(0)}% from 24h ATH`);
+                  const dropFromHigh = (estimatedHigh - cur) / estimatedHigh * 100;
+                  if (dropFromHigh >= 70) {
+                    console.log(`  ⚠️ [ATHFilter] SKIP ${pool.name}: down ${dropFromHigh.toFixed(0)}% from estimated 24h high ($${estimatedHigh.toPrecision(4)} → $${cur.toPrecision(4)})`);
                     momentumSkip = true;
                   }
                 }
@@ -690,11 +685,11 @@ export async function runHunter() {
 
               console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → total=${totalScore}/100`);
 
-              if (totalScore > 85) dynamicSol = 5;
-              else if (totalScore >= 75) dynamicSol = 4;
-              else if (totalScore >= 65) dynamicSol = 4;
-              else if (totalScore >= 50) dynamicSol = 3;
-              else if (totalScore >= 40) dynamicSol = 2;
+              if (totalScore > 85) dynamicSol = 8;
+              else if (totalScore >= 75) dynamicSol = 6;
+              else if (totalScore >= 65) dynamicSol = 5;
+              else if (totalScore >= 50) dynamicSol = 4;
+              else if (totalScore >= 40) dynamicSol = 3;
               else { dynamicSol = 0; momentumSkip = true; console.log(`  [PositionSize] score=${totalScore} < 40 → SKIP`); }
 
               dynamicSol = Math.min(dynamicSol, config.maxSolPerPosition);

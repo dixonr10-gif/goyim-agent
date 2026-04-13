@@ -89,9 +89,10 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
             pnlSource  = usdPnl.source;
           }
         }
-        // No fallback — usd-precise only. Skip exit checks if price unavailable.
+        // USD-precise unavailable — tier 1 SL skipped, but tiers 2/3 still
+        // fire via SOL-based fallback below (after repair attempt).
         if (pnlSource === "none") {
-          console.log(`  ⚠️ ${position.id}: [PnL] usd-precise unavailable — skipping exit checks this cycle`);
+          console.log(`  ⚠️ ${position.id}: [PnL] usd-precise unavailable — tier 1 skipped, hardSL/panicSL fallback active`);
         }
       } catch (e) { console.log("[PNL] getPositionValue error:", e.message); }
 
@@ -125,6 +126,32 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       // If still no PnL after repair attempt
       const effectiveMaxHold = isStrictHours() ? 2 : EXIT_RULES.maxHoldHours;
       if (pnlSource === "none") {
+        // ── SOL-based fallback for hardSL / panicSL (tiers 2 & 3) ──────
+        // USD-precise is unavailable, but a -30% loss is a -30% loss regardless
+        // of precision. Compute SOL-based PnL and fire tiers 2/3 if breached.
+        // Only tier 1 (noise zone -6% to -10%) requires usd-precise confirmation.
+        const dep = position.solDeployed ?? 0;
+        if (currentValue != null && currentValue > 0 && dep > 0) {
+          const solPnlPct = ((currentValue - dep) / dep) * 100;
+          const fallbackSL = isStrictHours() ? -4 : EXIT_RULES.stopLossPercent;
+          const fallbackHardSL  = fallbackSL * 1.7;
+          const fallbackPanicSL = fallbackSL * 2.5;
+
+          if (solPnlPct <= fallbackPanicSL) {
+            console.log(`  💀 ${position.id}: PANIC SL (sol-fallback) ${solPnlPct.toFixed(1)}% (≤${fallbackPanicSL.toFixed(1)}%) — closing immediately`);
+            try { const { updatePositionField } = await import("./positionManager.js"); updatePositionField(position.id, "_slHandledAt", Date.now()); } catch {}
+            toClose.push({ positionId: position.id, code: "SL", reason: `panic SL: ${solPnlPct.toFixed(1)}% [sol-fallback]`, pnlPercent: solPnlPct, currentValue });
+            continue;
+          }
+          if (solPnlPct <= fallbackHardSL) {
+            console.log(`  🛑 ${position.id}: HARD SL (sol-fallback) ${solPnlPct.toFixed(1)}% (≤${fallbackHardSL.toFixed(1)}%) — closing (no wait)`);
+            try { const { updatePositionField } = await import("./positionManager.js"); updatePositionField(position.id, "_slHandledAt", Date.now()); } catch {}
+            toClose.push({ positionId: position.id, code: "SL", reason: `hard SL: ${solPnlPct.toFixed(1)}% [sol-fallback]`, pnlPercent: solPnlPct, currentValue });
+            continue;
+          }
+          console.log(`  ⚠️ ${position.id}: PnL unavailable (sol-based=${solPnlPct.toFixed(1)}%, above hardSL ${fallbackHardSL.toFixed(1)}%) — skipping tier 1`);
+        }
+
         if (holdHours >= effectiveMaxHold) {
           toClose.push({ positionId: position.id, code: "MAX_HOLD", reason: `max hold: ${holdHours.toFixed(0)}h${isStrictHours() ? " (strict)" : ""}`, pnlPercent: 0, currentValue });
           continue;
