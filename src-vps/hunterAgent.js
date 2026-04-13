@@ -370,6 +370,19 @@ export async function runHunter() {
     });
     if (nonBlacklisted.length === 0) { console.log("⚠️ All pools blacklisted."); return; }
 
+    // Fee APR floor: skip pools with < 15% fee APR
+    const MIN_FEE_APR = 15;
+    const feeFiltered = nonBlacklisted.filter(pool => {
+      const feeApr = (pool.apr ?? 0) * 100;
+      if (feeApr > 0 && feeApr < MIN_FEE_APR) {
+        const sym = (pool.name ?? "").split(/[-\/]/)[0];
+        console.log(`  [Filter] ${sym} Fee APR ${feeApr.toFixed(1)}% < ${MIN_FEE_APR}% → SKIP`);
+        return false;
+      }
+      return true;
+    });
+    if (feeFiltered.length === 0) { console.log("⚠️ All pools below fee APR floor."); return; }
+
     // Filter out pools that already have open positions (same pool OR same token)
     const openPos = getOpenPositions();
     const openPoolAddrs = new Set(openPos.map(p => p.pool));
@@ -378,7 +391,7 @@ export async function runHunter() {
       return name.split(/[-\/]/)[0]?.toUpperCase();
     }).filter(Boolean));
 
-    const availablePools = nonBlacklisted.filter(p => {
+    const availablePools = feeFiltered.filter(p => {
       if (openPoolAddrs.has(p.address)) return false;
       const sym = (p.name ?? "").split(/[-\/]/)[0]?.toUpperCase();
       if (sym && openTokenSyms.has(sym)) {
@@ -755,7 +768,7 @@ export async function runHunter() {
                 decision,
                 poolTvl: pool.tvl ?? null,
                 poolVolume24h: pool.volume?.["24h"] ?? null,
-                poolFeeApr: pool.apr != null ? pool.apr * 100 : null,
+                poolFeeApr: rawPool?.apr != null ? rawPool.apr * 100 : (parseFloat(pool.feeApr) || null),
                 organicScore: pool.organicScore ?? null,
               });
               recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });
