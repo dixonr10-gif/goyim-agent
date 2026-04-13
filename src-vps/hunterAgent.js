@@ -404,26 +404,15 @@ export async function runHunter() {
     if (filteredOutOpen > 0) console.log(`  [Hunter] Filtered out ${filteredOutOpen} pool(s) — open positions/tokens`);
     if (availablePools.length === 0) { console.log("⚠️ All pools already have open positions."); return; }
 
-    // ── Pre-LLM hard filters: momentum, dump, pump exhaustion, ATH ────────
+    // ── Pre-LLM hard filters: pump exhaustion, crash, ATH ────────────────
     // These MUST run before LLM sees the pool list — LLM cannot override.
     console.log("\n🔍 Pre-LLM momentum filters...");
-    const pumpThreshold = parseFloat(process.env.SKIP_PUMP_1H_THRESHOLD) || 30;
     const preFilteredPools = [];
     for (const pool of availablePools) {
       const sym = (pool.name ?? "").split(/[-\/]/)[0];
       try {
         const mtf = await fetchMultiTimeframePriceChange(pool.address);
         if (mtf) {
-          // 1h dump check
-          if (mtf.h1 !== null && mtf.h1 < -5) {
-            console.log(`  [PreFilter] ${sym} SKIP — 1h ${mtf.h1.toFixed(1)}% (dump zone)`);
-            continue;
-          }
-          // 1h pump too late
-          if (mtf.h1 !== null && mtf.h1 > pumpThreshold) {
-            console.log(`  [PreFilter] ${sym} SKIP — 1h +${mtf.h1.toFixed(1)}% > ${pumpThreshold}% (too late)`);
-            continue;
-          }
           // h6 pump exhaustion (skip for tokens < 6h old)
           if (mtf.h6 !== null && mtf.h6 > 170) {
             const _ca = pool.created_at ?? pool.createdAt ?? pool.creation_time ?? null;
