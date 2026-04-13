@@ -16,7 +16,6 @@ const QUOTE_TOKENS = ["USDC", "USDT", "SOL", "WSOL", "WBTC", "WETH", "BUSD", "DA
 // MAX_HOLD is resolved dynamically (loss → MAX_HOLD_LOSS, profit → MAX_HOLD_PROFIT).
 const COOLDOWN_HOURS_BY_REASON = {
   SL: 3,
-  EMERGENCY: 3,
   OOR_LEFT: 1,
   MAX_HOLD_LOSS: 1,
   TRAILING_TP: 0.25,

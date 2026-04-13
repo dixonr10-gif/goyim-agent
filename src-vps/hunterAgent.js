@@ -629,7 +629,7 @@ export async function runHunter() {
               try {
                 const mtf = await fetchMultiTimeframePriceChange(pool.address);
                 if (mtf) {
-                  if (mtf.h6 !== null && mtf.h6 > 200) momentumScore = 0;
+                  if (mtf.h6 !== null && mtf.h6 > 170) momentumScore = 0;
                   else if (mtf.m5 !== null && mtf.h1 !== null) {
                     if (mtf.m5 > 0 && mtf.h1 > 0) momentumScore = 80;
                     else if (mtf.m5 < 0 && mtf.h1 > 0) momentumScore = 60;

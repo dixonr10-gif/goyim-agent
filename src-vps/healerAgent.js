@@ -15,62 +15,6 @@ import { recordPoolClose } from "./poolMemory.js";
 
 let healerIteration = 0;
 
-// Emergency PnL check — uses same getPositionValue as healer (usd-precise).
-// Acts as a redundant safety net in case the main Healer cycle is stalled.
-// Now defers to Healer if Healer already queued an SL close in the last 2 minutes
-// (via the _slHandledAt flag set in exitStrategy.js).
-const SL_HANDOFF_WINDOW_MS = 2 * 60 * 1000;
-export async function runEmergencyPriceCheck() {
-  try {
-    const openPos = getOpenPositions();
-    if (openPos.length === 0) return;
-
-    for (const pos of openPos) {
-      try {
-        // Skip if Healer already queued this position for SL close in current 2-min window.
-        // Prevents double-close race: Healer fires SL → submits TX → emergency check sees
-        // PnL still ≤-15% (TX not confirmed yet) → would re-fire close on the same position.
-        if (pos._slHandledAt && Date.now() - pos._slHandledAt < SL_HANDOFF_WINDOW_MS) {
-          const ageS = ((Date.now() - pos._slHandledAt) / 1000).toFixed(0);
-          console.log(`  [EmergencyExit] ${pos.poolName ?? pos.id}: Healer already handling SL (${ageS}s ago) — skipping`);
-          continue;
-        }
-
-        const currentValue = await getPositionValue(pos);
-        if (pos._badData || pos._positionGone) continue;
-        const solPrice = pos._solPriceNow ?? 0;
-        const posValueUsd = pos._posValueUsd ?? 0;
-        if (posValueUsd <= 0 || solPrice <= 0) continue;
-
-        const entryUsd = pos.solDeployed * (pos.solPriceAtEntry || solPrice);
-        if (entryUsd <= 0) continue;
-        const pnlPct = ((posValueUsd - entryUsd) / entryUsd) * 100;
-
-        if (pnlPct <= -15) {
-          console.log(`  [EmergencyExit] ${pos.poolName ?? pos.id}: PnL=${pnlPct.toFixed(1)}% (value=$${posValueUsd.toFixed(2)} entry=$${entryUsd.toFixed(2)}) → closing NOW`);
-          try {
-            // Stamp the handoff flag BEFORE the close TX so the parallel Healer cycle
-            // (which may run during our 30-60s close TX latency) skips this position.
-            try { const { updatePositionField } = await import("./positionManager.js"); updatePositionField(pos.id, "_slHandledAt", Date.now()); } catch {}
-            const result = await closePosition(pos.id, { reason: "EMERGENCY", pnlPct });
-            const txSigs = result?.txSignatures ?? [];
-            const solReturned = result?.solReceived ?? pos.solDeployed;
-            const closedTrade = recordTradeClose({ positionId: pos.id, solReturned, preClosePnlPct: pnlPct, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EMERGENCY", binRange: pos.binRange });
-            await notifyPositionClosed(pos.id, `emergency exit: PnL ${pnlPct.toFixed(1)}%`, txSigs);
-            if (closedTrade) {
-              if (closedTrade.outcome === "loss") {
-                try { recordTokenLoss(closedTrade.poolName); } catch {}
-              }
-            }
-            await new Promise(r => setTimeout(r, 15000));
-            await autoSwapTokensToSOL(notifyMessage);
-          } catch (e) { console.log(`  [EmergencyExit] Close failed: ${e.message}`); }
-        }
-      } catch {}
-    }
-  } catch {}
-}
-
 export async function runHealer() {
   if (isAgentPaused()) { console.log("⏸️ [Healer] paused"); return; }
 
@@ -134,9 +78,8 @@ export async function runHealer() {
         const preClosePnlPct = typeof exit.pnlPercent === "number" ? exit.pnlPercent : null;
         console.log(`[PNL] Pre-close PnL for ${exit.positionId}: ${preClosePnlPct?.toFixed(2) ?? "null"}% (from exitStrategy)`);
 
-        // Stamp handoff flag BEFORE the close TX so the parallel emergency check (60s tick)
-        // skips this position during the 30-60s on-chain close latency. exitStrategy.js
-        // already stamps this for SL paths; this catches all other exits (OOR/TP/MAX_HOLD).
+        // Stamp _slHandledAt to prevent double-close between overlapping healer cycles.
+        // exitStrategy.js already stamps this for SL paths; this catches other exits.
         try { const { updatePositionField } = await import("./positionManager.js"); updatePositionField(exit.positionId, "_slHandledAt", Date.now()); } catch {}
 
         // Resolve closeReason BEFORE the close TX so cooldownManager picks the

@@ -260,9 +260,8 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       // smart detector that compares PnL delta vs underlying USD value delta — true
       // RPC glitches change the PnL number without moving the underlying value.
       //
-      // Each successful SL push also stamps `_slHandledAt` so the 60-second emergency
-      // check in healerAgent.js can skip positions Healer just queued for close
-      // (prevents double-close race within the 2-min Healer window).
+      // Each successful SL push stamps `_slHandledAt` so overlapping healer cycles
+      // skip positions already queued for close (prevents double-close race).
       const effectiveSL = isStrictHours() ? -4 : EXIT_RULES.stopLossPercent;  // -6
       const hardSL  = effectiveSL * 1.7;   // ~-10  (~-7 strict)
       const panicSL = effectiveSL * 2.5;   // ~-15  (~-10 strict)

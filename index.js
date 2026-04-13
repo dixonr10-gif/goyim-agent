@@ -6,18 +6,17 @@ import { config } from "./config.js";
 import { startDailyReviewScheduler } from "./src/reviewScheduler.js";
 import { startFeeCompounder } from "./src/feeCompounder.js";
 import { runHunter } from "./src/hunterAgent.js";
-import { runHealer, runEmergencyPriceCheck } from "./src/healerAgent.js";
+import { runHealer } from "./src/healerAgent.js";
 import { initTelegramBot, isAgentPaused, notifyMessage } from "./src/telegramBot.js";
 import { runHealthCheck } from "./src/healthCheck.js";
-import { getWIBHour } from "./src/timeHelper.js";
+import { getWIBHour, isStrictHours } from "./src/timeHelper.js";
 import { startDailyPnLReport } from "./src/dailyReport.js";
 
-const HUNTER_INTERVAL_MS = config.loopIntervalMs;  // default 20min
 const HEALER_INTERVAL_MS = 1 * 60 * 1000;           // fixed 1min
 
 console.log("🚀 Goyim DLMM Agent (Dual-Agent) starting...");
 console.log(`   Model:    ${config.openRouterModel}`);
-console.log(`   Hunter:   every ${HUNTER_INTERVAL_MS / 60_000}min`);
+console.log(`   Hunter:   10min (normal) / 30min (strict)`);
 console.log(`   Healer:   every ${HEALER_INTERVAL_MS / 60_000}min`);
 console.log(`   Max SOL:  ${config.maxSolPerPosition} SOL/position`);
 console.log(`   Max pos:  ${config.maxOpenPositions}`);
@@ -48,17 +47,21 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// ── Emergency price check: every 30s (lightweight DexScreener only) ──────────
-setInterval(() => {
-  runEmergencyPriceCheck().catch(err => console.error("[Emergency check error]", err.message));
-}, 30 * 1000);
-
-// ── Hunter: starts after 5s (let Healer settle first), runs every 30min ──────
+// ── Hunter: starts after 5s, dynamic interval (10min normal / 30min strict) ──
+function scheduleNextHunter() {
+  const delay = isStrictHours() ? 30 * 60 * 1000 : 10 * 60 * 1000;
+  const mode = isStrictHours() ? "strict" : "normal";
+  console.log(`[Hunter] Next run in ${delay / 60_000}m (${mode} hours)`);
+  setTimeout(() => {
+    runHunter()
+      .catch(err => console.error("[Hunter interval error]", err.message))
+      .finally(() => scheduleNextHunter());
+  }, delay);
+}
 setTimeout(() => {
-  runHunter();
-  setInterval(() => {
-    runHunter().catch(err => console.error("[Hunter interval error]", err.message));
-  }, HUNTER_INTERVAL_MS);
+  runHunter()
+    .catch(err => console.error("[Hunter interval error]", err.message))
+    .finally(() => scheduleNextHunter());
 }, 5000);
 
 // ── Health check (hourly) ─────────────────────────────────────────────────────

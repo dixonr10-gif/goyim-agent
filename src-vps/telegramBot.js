@@ -590,7 +590,7 @@ bot.on("photo", async (ctx) => {
 
 // ── Shared log fetcher ──────────────────────────────────────────────
 const LOG_NOISE = /bins:|dec=\d|tokenPrice: pool=|X=.*Y=So|unclaimedFees|claimedFees|positionFeeX|mint decimals/i;
-const LOG_SHOW = /PnL=|OPEN|CLOSE|ERROR|BLACKLIST|Hunter Agent|Healer Agent|EmergencyExit|TrailingTP|Rebalance|PositionSize|Strategy|qualifying pools|candidates:/i;
+const LOG_SHOW = /PnL=|OPEN|CLOSE|ERROR|BLACKLIST|Hunter Agent|Healer Agent|TrailingTP|Rebalance|PositionSize|Strategy|qualifying pools|candidates:/i;
 
 async function sendLogs(ctx, keyword) {
   try {
@@ -775,8 +775,8 @@ function registerCallbacks() {
       ...Markup.inlineKeyboard([
         [Markup.button.callback("📈 PnL", "logs_pnl"), Markup.button.callback("🎯 Hunter", "logs_hunter")],
         [Markup.button.callback("💊 Healer", "logs_healer"), Markup.button.callback("🚨 Error", "logs_error")],
-        [Markup.button.callback("🔄 Trades", "logs_trade"), Markup.button.callback("⚡ Emergency", "logs_emergency")],
-        [Markup.button.callback("📊 All", "logs_all"), Markup.button.callback("❌ Cancel", "logs_cancel")],
+        [Markup.button.callback("🔄 Trades", "logs_trade"), Markup.button.callback("📊 All", "logs_all")],
+        [Markup.button.callback("❌ Cancel", "logs_cancel")],
       ]),
     });
   });
