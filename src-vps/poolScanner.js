@@ -14,7 +14,7 @@ function calculateOrganicScore(pool, dexPair) {
   let score = 50;
   const vol24h = pool.volume?.["24h"] ?? 0;
   const tvl = pool.tvl ?? 1;
-  const apr = (pool.apr ?? 0) * 100;
+  const apr = pool.apr ?? 0;
   const ageMin = getPoolAgeMinutes(pool) ?? 1440;
 
   // Volume/TVL ratio — high turnover = organic
@@ -180,7 +180,7 @@ export async function scanPools() {
     const preFiltered = allPools.filter(p => {
       const vol = p.volume?.["24h"] ?? 0;
       const tvl = p.tvl ?? 0;
-      const apr = (p.apr ?? 0) * 100;
+      const apr = p.apr ?? 0;
       if (vol < 50_000) return false;
       if (tvl < 5_000) return false;
       if (apr < 10) return false;
@@ -277,7 +277,7 @@ export function formatPoolsForLLM(pools) {
     address: p.address,
     name: p.name,
     volume24h: Math.round(p.volume?.["24h"] ?? 0),
-    feeApr: ((p.apr ?? 0) * 100).toFixed(1),
+    feeApr: (p.apr ?? 0).toFixed(1),
     tvl: Math.round(p.tvl ?? 0),
     binStep: p.pool_config?.bin_step,
     ageMinutes: getPoolAgeMinutes(p)?.toFixed(0) ?? "unknown",

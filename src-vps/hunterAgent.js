@@ -370,13 +370,19 @@ export async function runHunter() {
     });
     if (nonBlacklisted.length === 0) { console.log("⚠️ All pools blacklisted."); return; }
 
-    // Fee APR floor: skip pools with < 15% fee APR
-    const MIN_FEE_APR = 15;
+    // Fee APR pre-filter: pool.apr is already a percent (e.g. 6.46 = 6.46%),
+    // don't ×100. Null/undefined APR is treated as SKIP (no bypass). Threshold
+    // comes from MIN_FEE_APR_FILTER env (default 10).
+    const MIN_FEE_APR = config.minFeeAprFilter ?? 10;
     const feeFiltered = nonBlacklisted.filter(pool => {
-      const feeApr = (pool.apr ?? 0) * 100;
-      if (feeApr > 0 && feeApr < MIN_FEE_APR) {
-        const sym = (pool.name ?? "").split(/[-\/]/)[0];
-        console.log(`  [Filter] ${sym} Fee APR ${feeApr.toFixed(1)}% < ${MIN_FEE_APR}% → SKIP`);
+      const feeApr = typeof pool.apr === "number" ? pool.apr : null;
+      const sym = (pool.name ?? "").split(/[-\/]/)[0];
+      if (feeApr == null) {
+        console.log(`  [PreFilter] ${sym} SKIP — Fee APR null (no data)`);
+        return false;
+      }
+      if (feeApr < MIN_FEE_APR) {
+        console.log(`  [PreFilter] ${sym} SKIP — Fee APR ${feeApr.toFixed(2)}% < ${MIN_FEE_APR}%`);
         return false;
       }
       return true;
