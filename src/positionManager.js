@@ -147,19 +147,38 @@ export async function openPosition(decision) {
 
     const positionKeypair = require("@solana/web3.js").Keypair.generate();
 
-    const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-      positionPubKey: positionKeypair.publicKey,
-      user: wallet.publicKey,
-      totalXAmount: new BN(solIsX ? solLamports : 0),
-      totalYAmount: new BN(solIsY ? solLamports : 0),
-      strategy: {
-        maxBinId: upperBinId,
-        minBinId: lowerBinId,
-        strategyType: 0,
-      },
-    });
-
-    const sig = await sendAndConfirmTransaction(connection, tx, [wallet, positionKeypair]);
+    // Retry on ExceededBinSlippageTolerance (AnchorError 6004): the active bin can
+    // shift between quote and execution, so we start at 1% slippage and double to 2%
+    // on a single bin-slippage failure before surfacing the error.
+    let sig;
+    let slippage = 1;
+    const MAX_SLIPPAGE_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_SLIPPAGE_ATTEMPTS; attempt++) {
+      try {
+        const tx = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+          positionPubKey: positionKeypair.publicKey,
+          user: wallet.publicKey,
+          totalXAmount: new BN(solIsX ? solLamports : 0),
+          totalYAmount: new BN(solIsY ? solLamports : 0),
+          strategy: {
+            maxBinId: upperBinId,
+            minBinId: lowerBinId,
+            strategyType: 0,
+          },
+          slippage,
+        });
+        sig = await sendAndConfirmTransaction(connection, tx, [wallet, positionKeypair]);
+        break;
+      } catch (err) {
+        const isBinSlippage = /6004|ExceededBinSlippageTolerance/i.test(err?.message ?? "");
+        if (isBinSlippage && attempt < MAX_SLIPPAGE_ATTEMPTS) {
+          slippage *= 2;
+          console.log(`[Position] Retry with higher slippage tolerance (${slippage}%)`);
+          continue;
+        }
+        throw err;
+      }
+    }
     console.log(`✅ TX: https://solscan.io/tx/${sig}`);
 
     // Fetch entry price for IL tracking (non-blocking — failure is OK)

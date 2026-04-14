@@ -740,10 +740,10 @@ export async function runHunter() {
               console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → total=${totalScore}/100`);
 
               if (totalScore > 85) dynamicSol = 8;
-              else if (totalScore >= 75) dynamicSol = 6;
-              else if (totalScore >= 65) dynamicSol = 5;
-              else if (totalScore >= 50) dynamicSol = 4;
-              else if (totalScore >= 40) dynamicSol = 3;
+              else if (totalScore >= 75) dynamicSol = 7;
+              else if (totalScore >= 65) dynamicSol = 6;
+              else if (totalScore >= 50) dynamicSol = 5;
+              else if (totalScore >= 40) dynamicSol = 4;
               else { dynamicSol = 0; momentumSkip = true; console.log(`  [PositionSize] score=${totalScore} < 40 → SKIP`); }
 
               dynamicSol = Math.min(dynamicSol, config.maxSolPerPosition);

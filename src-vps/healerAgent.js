@@ -41,7 +41,7 @@ export async function runHealer() {
       for (const pos of manualCloses) {
         try {
           console.log(`  [ManualClose] recording ${pos.id} (${pos.poolName ?? pos.pool?.slice(0,8)})`);
-          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL", binRange: pos.binRange });
+          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL", binRange: pos.binRange, solPriceAtEntry: pos.solPriceAtEntry, solPriceAtClose: pos.solPriceAtEntry });
           await notifyMessage(
             `🔄 <b>Manual close detected</b>\n\n` +
             `Pool: ${esc(pos.poolName ?? "?")}\n` +
@@ -109,7 +109,22 @@ export async function runHealer() {
         const result = await closePosition(exit.positionId, { reason: closeReason, pnlPct: preClosePnlPct });
         const txSignatures = result?.txSignatures ?? [];
         const solReturned = exit.currentValue ?? result?.solReceived ?? pos?.solDeployed;
-        const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason, binRange: pos?.binRange });
+
+        // Fetch SOL/USD at close so tradeMemory can record pnlUsd.  Uses the same
+        // CoinGecko endpoint as positionManager.openPosition; failure is OK —
+        // recordTradeClose falls back to (pnlSol × solPriceAtEntry).
+        let solPriceAtClose = null;
+        try {
+          const priceRes = await fetch(
+            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+            { signal: AbortSignal.timeout(8000) }
+          );
+          const priceData = await priceRes.json();
+          const p = priceData?.solana?.usd;
+          if (typeof p === "number" && p > 10) solPriceAtClose = p;
+        } catch {}
+
+        const closedTrade = recordTradeClose({ positionId: exit.positionId, solReturned, preClosePnlPct, poolName: pos?.poolName, solDeployed: pos?.solDeployed, closeReason, binRange: pos?.binRange, solPriceAtEntry: pos?.solPriceAtEntry, solPriceAtClose });
         await notifyPositionClosed(exit.positionId, exit.reason, txSignatures);
         closedCount++;
 

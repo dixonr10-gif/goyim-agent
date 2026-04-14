@@ -107,7 +107,7 @@ export function recordTradeOpen({
 /**
  * Catat posisi yang ditutup + kalkulasi P&L
  */
-export function recordTradeClose({ positionId, solReturned, preClosePnlPct = null, poolName = null, solDeployed = null, closeReason = null, binRange = null }) {
+export function recordTradeClose({ positionId, solReturned, preClosePnlPct = null, poolName = null, solDeployed = null, closeReason = null, binRange = null, solPriceAtEntry = null, solPriceAtClose = null }) {
   const memory = loadMemory();
 
   let trade = memory.trades.find((t) => t.id === positionId);
@@ -162,15 +162,33 @@ export function recordTradeClose({ positionId, solReturned, preClosePnlPct = nul
     }
   }
 
-  const holdDurationHours =
+  const closedAtIso = new Date().toISOString();
+  const holdHours =
     (Date.now() - new Date(trade.openedAt).getTime()) / 3_600_000;
 
-  trade.closedAt = new Date().toISOString();
+  // USD PnL: prefer both-price calc; fall back to pnlSol × entry price so we
+  // still record a number when the close-time SOL price fetch fails.
+  const entryPx = typeof solPriceAtEntry === "number" && solPriceAtEntry > 0 ? solPriceAtEntry : null;
+  const closePx = typeof solPriceAtClose === "number" && solPriceAtClose > 0 ? solPriceAtClose : null;
+  let pnlUsd = null;
+  const dep = trade.solDeployed || solDeployed || 0;
+  const ret = typeof solReturned === "number" ? solReturned : 0;
+  if (entryPx && closePx && dep > 0) {
+    pnlUsd = (ret * closePx) - (dep * entryPx);
+  } else if (entryPx && typeof pnlSol === "number") {
+    pnlUsd = pnlSol * entryPx;
+  }
+
+  trade.closedAt = closedAtIso;
   trade.solReturned = solReturned;
   trade.pnlSol = pnlSol;
   trade.pnlPercent = pnlPercent;
   trade.pnlSource = pnlSource;
-  trade.holdDurationHours = holdDurationHours.toFixed(1);
+  trade.pnlUsd = pnlUsd;
+  if (entryPx) trade.solPriceAtEntry = entryPx;
+  if (closePx) trade.solPriceAtClose = closePx;
+  trade.holdHours = Number(holdHours.toFixed(2));
+  trade.holdDurationHours = holdHours.toFixed(1);
   if (closeReason) trade.exitReason = closeReason;
   if (binRange) trade.binRange = binRange;
   trade.outcome = pnlSource === "unknown" ? "unknown"

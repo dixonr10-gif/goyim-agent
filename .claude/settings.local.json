@@ -57,7 +57,9 @@
       "WebFetch(domain:edge.meteora.ag)",
       "WebFetch(domain:dlmm-api.meteora.ag)",
       "Bash(pscp -pw goyimAgen9t \"src-vps/technicalAnalysis.js\" root@152.42.167.126:/root/goyim-agent/src/technicalAnalysis.js)",
-      "Bash([ -f /c/Users/User/Downloads/goyim-agent/.env ])"
+      "Bash([ -f /c/Users/User/Downloads/goyim-agent/.env ])",
+      "Bash(sshpass:*)",
+      "Bash(pscp:*)"
     ]
   }
 }
