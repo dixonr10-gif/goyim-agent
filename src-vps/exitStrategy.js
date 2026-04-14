@@ -187,7 +187,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
             const strict = isStrictHours();
             if (oorDir === "right") {
               // Token pumped past range → position is all-token, value up, no IL
-              oorWaitMinutes = strict ? 20 : 35;
+              oorWaitMinutes = strict ? 15 : 35;
               console.log(`  [OOR] kanan — token pump (active=${binStatus.activeBinId} > upper=${binStatus.upperBin}), wait ${oorWaitMinutes}m${strict ? " (strict)" : ""}`);
             } else if (oorDir === "left") {
               // Token dumped below range → position is all-SOL, IL realized
