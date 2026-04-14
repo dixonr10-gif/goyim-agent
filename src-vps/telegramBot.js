@@ -151,10 +151,12 @@ function registerCommands() {
     const tp = process.env.TAKE_PROFIT_PERCENT ?? "5";
     const sl = process.env.STOP_LOSS_PERCENT ?? "-3";
     const mh = process.env.MAX_HOLD_HOURS ?? "3";
+    const minFeeApr = c.minFeeAprFilter ?? (Number(process.env.MIN_FEE_APR_FILTER) || 10);
+    const minFeeAprHold = parseFloat(process.env.MIN_FEE_APR_TO_HOLD) || 10;
     const msg =
       `<b>⚙️ Current Thresholds</b>\n${"─".repeat(25)}\n\n` +
       `Min Volume 24h: <b>$${(c.minPoolVolumeUsd / 1000).toFixed(0)}k</b>\n` +
-      `Min Fee APR: <b>${c.minPoolFeeApr}%</b>\n` +
+      `Min Fee APR: <b>${minFeeApr}%</b>\n` +
       `Max TVL: <b>$${(c.maxTvlUsd / 1000).toFixed(0)}k</b>\n` +
       `Min Organic Score: <b>${c.minOrganicScore}/100</b>\n\n` +
       `Max SOL/position: <b>${c.maxSolPerPosition} SOL</b>\n` +
@@ -163,6 +165,7 @@ function registerCommands() {
       `Take Profit: <b>+${tp}%</b>\n` +
       `Stop Loss: <b>${sl}%</b>\n` +
       `Max Hold Time: <b>${mh}h</b>\n` +
+      `Min Fee APR to Hold: <b>${minFeeAprHold}%</b>\n` +
       `OOR Wait: <b>${c.outOfRangeWaitMinutes} min</b>\n` +
       `Fee TP: <b>${(c.takeProfitFeePct * 100).toFixed(0)}% of deployed</b>`;
     await ctx.replyWithHTML(msg, mainMenu());

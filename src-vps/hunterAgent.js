@@ -805,7 +805,7 @@ export async function runHunter() {
                 decision,
                 poolTvl: pool.tvl ?? null,
                 poolVolume24h: pool.volume?.["24h"] ?? null,
-                poolFeeApr: rawPool?.apr != null ? rawPool.apr * 100 : (parseFloat(pool.feeApr) || null),
+                poolFeeApr: rawPool?.apr != null ? rawPool.apr : (parseFloat(pool.feeApr) || null),
                 organicScore: pool.organicScore ?? null,
               });
               recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });
