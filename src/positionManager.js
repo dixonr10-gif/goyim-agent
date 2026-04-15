@@ -170,9 +170,16 @@ export async function openPosition(decision) {
         sig = await sendAndConfirmTransaction(connection, tx, [wallet, positionKeypair]);
         break;
       } catch (err) {
-        const isBinSlippage = /6004|ExceededBinSlippageTolerance/i.test(err?.message ?? "");
+        // Solana RPC errors stuff the 6004 code into err.logs (array) and
+        // err.simulationResponse — not err.message. Check all three.
+        const msgParts = [
+          err?.message,
+          ...(err?.logs ?? []),
+          JSON.stringify(err?.simulationResponse ?? {}),
+        ].join("\n");
+        const isBinSlippage = /6004|ExceededBinSlippageTolerance/i.test(msgParts);
         if (isBinSlippage && attempt < MAX_SLIPPAGE_ATTEMPTS) {
-          slippage *= 2;
+          slippage = 4;
           console.log(`[Position] Retry with higher slippage tolerance (${slippage}%)`);
           continue;
         }

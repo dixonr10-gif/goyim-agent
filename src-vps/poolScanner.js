@@ -10,11 +10,30 @@ const SKIP_TOKENS = [
 let _lastScanResults = [];
 export function getLastCandidates() { return _lastScanResults; }
 
+/**
+ * Meteora datapi's `pool.apr` is a short-window annualization that frequently reads 0
+ * for active meme pools during quiet fee windows. When that happens, compute APR
+ * ourselves from 24h volume × fee rate / TVL × 365 so downstream filters see a
+ * usable number. Returns a percent value (e.g. 3650 = 3650% APR).
+ */
+export function getEffectiveApr(pool) {
+  const raw = typeof pool?.apr === "number" ? pool.apr : 0;
+  if (raw > 0) return raw;
+  const vol24h = pool?.volume?.["24h"] ?? 0;
+  const tvl = pool?.tvl ?? 0;
+  // DexTrending-sourced pools don't carry pool_config.bin_step; fall back to
+  // 100 bps (1%) — the most common Meteora meme tier — so fallback still
+  // computes a reasonable APR. Real Meteora-sourced pools always carry bin_step.
+  const binStep = pool?.pool_config?.bin_step ?? 100;
+  if (vol24h <= 0 || tvl <= 0) return 0;
+  return (vol24h * binStep * 0.01 / tvl) * 365;
+}
+
 function calculateOrganicScore(pool, dexPair) {
   let score = 50;
   const vol24h = pool.volume?.["24h"] ?? 0;
   const tvl = pool.tvl ?? 1;
-  const apr = pool.apr ?? 0;
+  const apr = getEffectiveApr(pool);
   const ageMin = getPoolAgeMinutes(pool) ?? 1440;
 
   // Volume/TVL ratio — high turnover = organic
@@ -180,7 +199,7 @@ export async function scanPools() {
     const preFiltered = allPools.filter(p => {
       const vol = p.volume?.["24h"] ?? 0;
       const tvl = p.tvl ?? 0;
-      const apr = p.apr ?? 0;
+      const apr = getEffectiveApr(p);
       if (vol < 50_000) return false;
       if (tvl < 5_000) return false;
       if (apr < 10) return false;
@@ -277,7 +296,7 @@ export function formatPoolsForLLM(pools) {
     address: p.address,
     name: p.name,
     volume24h: Math.round(p.volume?.["24h"] ?? 0),
-    feeApr: (p.apr ?? 0).toFixed(1),
+    feeApr: getEffectiveApr(p).toFixed(1),
     tvl: Math.round(p.tvl ?? 0),
     binStep: p.pool_config?.bin_step,
     ageMinutes: getPoolAgeMinutes(p)?.toFixed(0) ?? "unknown",

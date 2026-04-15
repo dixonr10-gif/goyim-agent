@@ -4,7 +4,7 @@
 import fs from "fs";
 import path from "path";
 import { config } from "../config.js";
-import { scanPools, formatPoolsForLLM, fetchDexScreenerMeteora } from "./poolScanner.js";
+import { scanPools, formatPoolsForLLM, fetchDexScreenerMeteora, getEffectiveApr } from "./poolScanner.js";
 import { checkBundler } from "./bundlerChecker.js";
 import { analyzePool } from "./marketAnalyzer.js";
 import { agentDecide } from "./llmAgent.js";
@@ -370,19 +370,20 @@ export async function runHunter() {
     });
     if (nonBlacklisted.length === 0) { console.log("⚠️ All pools blacklisted."); return; }
 
-    // Fee APR pre-filter: pool.apr is already a percent (e.g. 6.46 = 6.46%),
-    // don't ×100. Null/undefined APR is treated as SKIP (no bypass). Threshold
-    // comes from MIN_FEE_APR_FILTER env (default 10).
+    // Fee APR pre-filter: prefer Meteora's pool.apr; if that's 0/missing (Meteora
+    // often returns 0 during quiet fee windows) compute from vol × binStep / tvl × 365
+    // via getEffectiveApr so we don't drop otherwise-valid pools.
     const MIN_FEE_APR = config.minFeeAprFilter ?? 10;
     const feeFiltered = nonBlacklisted.filter(pool => {
-      const feeApr = typeof pool.apr === "number" ? pool.apr : null;
+      const feeApr = getEffectiveApr(pool);
       const sym = (pool.name ?? "").split(/[-\/]/)[0];
-      if (feeApr == null) {
+      const source = (typeof pool.apr === "number" && pool.apr > 0) ? "meteora" : "computed";
+      if (!feeApr || feeApr <= 0) {
         console.log(`  [PreFilter] ${sym} SKIP — Fee APR null (no data)`);
         return false;
       }
       if (feeApr < MIN_FEE_APR) {
-        console.log(`  [PreFilter] ${sym} SKIP — Fee APR ${feeApr.toFixed(2)}% < ${MIN_FEE_APR}%`);
+        console.log(`  [PreFilter] ${sym} SKIP — Fee APR ${feeApr.toFixed(2)}% [${source}] < ${MIN_FEE_APR}%`);
         return false;
       }
       return true;
@@ -625,15 +626,30 @@ export async function runHunter() {
               console.log(`  [DexTrending] ${pool.name} is trending → confidence +10`);
             }
 
-            // Strategy selection using cached _mtf from pre-LLM filter (no re-fetch)
+            // Strategy selection using cached _mtf from pre-LLM filter (no re-fetch).
+            // Primary signal is 1h change; fall back to (5m × 12) as a rough proxy when
+            // h1 is missing so DexTrending pools without full MTF data can still route
+            // to BidAsk. BidAsk trigger relaxed to +2% (was +5%), upper cap +20%.
             const cachedMtf = rawPool?._mtf ?? null;
             const priceChange1h = cachedMtf?.h1 ?? null;
-            if (priceChange1h !== null && priceChange1h >= 5 && priceChange1h <= 20) {
+            const priceChange5m = cachedMtf?.m5 ?? null;
+            let effective1h = priceChange1h;
+            let proxyFrom5m = false;
+            if (effective1h == null && typeof priceChange5m === "number") {
+              effective1h = priceChange5m * 12;
+              proxyFrom5m = true;
+            }
+            if (effective1h != null && effective1h >= 2 && effective1h <= 20) {
               decision.strategy = "bidask";
-              console.log(`  [Strategy] BidAsk dipilih — 1h +${priceChange1h.toFixed(1)}% (range 5-20%)`);
+              const tag = proxyFrom5m ? " (proxy from 5m)" : "";
+              console.log(`  [Strategy] BidAsk — 1h +${effective1h.toFixed(1)}%${tag}`);
+            } else if (effective1h != null) {
+              decision.strategy = "spot";
+              const tag = proxyFrom5m ? " (proxy from 5m)" : "";
+              console.log(`  [Strategy] Spot — 1h ${effective1h >= 0 ? "+" : ""}${effective1h.toFixed(1)}%${tag} (below threshold)`);
             } else {
               decision.strategy = "spot";
-              console.log(`  [Strategy] Spot dipilih — 1h ${priceChange1h !== null ? ((priceChange1h >= 0 ? "+" : "") + priceChange1h.toFixed(1) + "%") : "N/A"}`);
+              console.log(`  [Strategy] Spot — 1h N/A (no momentum data)`);
             }
 
             // momentumSkip: set by scoring, poolMem, TA — gates the open path
@@ -723,33 +739,60 @@ export async function runHunter() {
               const otherScore = Math.min(100, opportunity);
 
               // Weighted total
-              totalScore = Math.round(
+              const rawScore = Math.round(
                 feeScore * 0.20 +
                 volScore * 0.35 +
                 momentumScore * 0.20 +
                 otherScore * 0.25
               );
+              totalScore = rawScore;
 
-              // 5) Pool memory adjustment
+              // 5) Pool memory adjustment — capped so a bad-streak pool can't
+              // single-handedly collapse a 70+ weighted score below the tier floor.
+              // PoolMem floor: -20. Combined negative adjustment floor: -40.
               const poolMem = getPoolScoreAdjustment(pool.address);
               if (poolMem.mem) {
                 console.log(`  📚 Pool memory: ${poolMem.mem.deployCount}x deploy, WR ${poolMem.mem.winRate ?? "?"}%, avg ${poolMem.mem.avgPnlPct >= 0 ? "+" : ""}${poolMem.mem.avgPnlPct}%`);
               }
+              let poolMemAdj = 0;
               if (poolMem.adjustment === -999) {
                 console.log(`  📚 [PoolMem] SKIP: ${poolMem.reason}`);
                 momentumSkip = true;
               } else if (poolMem.adjustment !== 0) {
-                totalScore = Math.max(0, Math.min(100, totalScore + poolMem.adjustment));
-                console.log(`  📚 [PoolMem] score ${poolMem.adjustment > 0 ? "+" : ""}${poolMem.adjustment} (${poolMem.reason})`);
+                poolMemAdj = poolMem.adjustment;
+                if (poolMemAdj < -20) {
+                  console.log(`  📚 [PoolMem] raw ${poolMemAdj} capped at -20 (${poolMem.reason})`);
+                  poolMemAdj = -20;
+                } else {
+                  console.log(`  📚 [PoolMem] score ${poolMemAdj > 0 ? "+" : ""}${poolMemAdj} (${poolMem.reason})`);
+                }
               }
+              // Downtrend isn't a separate deduction today (volScore just doesn't add +20
+              // when uptrend is false), but the slot is explicit so the combined floor
+              // is applied uniformly and any future downtrend-specific penalty plugs in here.
+              const downtrendAdj = 0;
+              let combinedAdj = poolMemAdj + downtrendAdj;
+              if (combinedAdj < -40) combinedAdj = -40;
+              totalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
 
-              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → total=${totalScore}/100`);
+              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} final=${totalScore}/100`);
+
+              // Pattern-learner (patterns.json) found the sweet spot is confidence ≥ 78
+              // AND oppScore ≥ 85 → 52-58% WR. Let such candidates bypass the < 40 floor
+              // at bottom tier (4 SOL) instead of skipping them outright.
+              const confidence = decision.confidence ?? 0;
+              const oppScore = decision.opportunityScore ?? opportunity ?? otherScore ?? 0;
+              const patternMatched = confidence >= 78 && oppScore >= 85;
 
               if (totalScore > 85) dynamicSol = 8;
               else if (totalScore >= 75) dynamicSol = 7;
               else if (totalScore >= 65) dynamicSol = 6;
               else if (totalScore >= 50) dynamicSol = 5;
               else if (totalScore >= 40) dynamicSol = 4;
+              else if (patternMatched) {
+                dynamicSol = 4;
+                console.log(`  [PatternMatch] ${tokenSym ?? pool.name} score=${totalScore} < 40 but confidence=${confidence} opp=${oppScore} → pattern-match, trading 4 SOL`);
+              }
               else { dynamicSol = 0; momentumSkip = true; console.log(`  [PositionSize] score=${totalScore} < 40 → SKIP`); }
 
               dynamicSol = Math.min(dynamicSol, config.maxSolPerPosition);
@@ -805,7 +848,7 @@ export async function runHunter() {
                 decision,
                 poolTvl: pool.tvl ?? null,
                 poolVolume24h: pool.volume?.["24h"] ?? null,
-                poolFeeApr: rawPool?.apr != null ? rawPool.apr : (parseFloat(pool.feeApr) || null),
+                poolFeeApr: getEffectiveApr(rawPool ?? pool) || (parseFloat(pool.feeApr) || null),
                 organicScore: pool.organicScore ?? null,
               });
               recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });

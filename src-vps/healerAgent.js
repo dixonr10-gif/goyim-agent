@@ -3,6 +3,10 @@
 
 import { getOpenPositions, closePosition, getPositionValue, syncOnChainPositions } from "./positionManager.js";
 import { evaluateExits } from "./exitStrategy.js";
+
+// 200ms pacer between per-position RPC batches to avoid bursting Helius's rate limit
+// when Healer has multiple open positions to evaluate/close in a single cycle.
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 import { recordLastRun } from "./healthCheck.js";
 import { recordTradeClose, getFullStats } from "./tradeMemory.js";
 import { maybeEvolveThresholds } from "./thresholdEvolver.js";
@@ -151,6 +155,7 @@ export async function runHealer() {
           try { const { recordGhostStrike } = await import("./positionManager.js"); recordGhostStrike(exit.positionId, closeErr.message); } catch {}
         }
       }
+      await sleep(200);
     }
 
     if (closedCount === 0 && exits.length === 0) {
@@ -160,6 +165,7 @@ export async function runHealer() {
     // Check and claim fees for open positions (momentum-based)
     for (const pos of getOpenPositions()) {
       try { await checkAndClaimFees(pos, notifyMessage); } catch {}
+      await sleep(200);
     }
 
   } catch (err) {

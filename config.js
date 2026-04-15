@@ -6,6 +6,7 @@ dotenv.config();
 export const config = {
   // Solana
   rpcUrl: process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
+  rpcUrlFallback: process.env.RPC_URL_FALLBACK || "https://api.mainnet-beta.solana.com",
   walletPrivateKey: process.env.WALLET_PRIVATE_KEY,
 
   // Telegram

@@ -33,10 +33,10 @@ let _healerInterval = setInterval(() => {
 }, HEALER_INTERVAL_MS);
 runHealer().then(() => { global.lastHealerRun = Date.now(); });
 
-// ── Watchdog: restart healer if stale > 5min ──────────────────────────────────
+// ── Watchdog: restart healer if stale > 3min ──────────────────────────────────
 setInterval(async () => {
   const staleMs = Date.now() - (global.lastHealerRun || 0);
-  if (staleMs > 5 * 60 * 1000) {
+  if (staleMs > 3 * 60 * 1000) {
     console.error(`[Watchdog] Healer STALE ${Math.round(staleMs / 60000)}m → restarting`);
     try { await notifyMessage(`⚠️ Watchdog: Healer STALE ${Math.round(staleMs / 60000)}m!\n🔄 Auto-restarting...`); } catch {}
     clearInterval(_healerInterval);

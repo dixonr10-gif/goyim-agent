@@ -149,9 +149,44 @@ export async function getWallet() {
   return _wallet;
 }
 
+export // ─── RPC fallback: flip to RPC_URL_FALLBACK for RPC_FALLBACK_WINDOW_MS after any 429.
+// Helius's free tier chokes during bursty Healer/Hunter cycles; on 429 we sticky-switch
+// to the secondary (defaults to api.mainnet-beta.solana.com) and auto-revert after the TTL.
+let _useFallbackUntil = 0;
+const RPC_FALLBACK_WINDOW_MS = 5 * 60 * 1000;
+
+export function isRpcRateLimitError(err) {
+  const msg = err?.message ?? "";
+  return /429|rate[- ]?limit|too many requests/i.test(msg);
+}
+
+export function markRpcRateLimited(opName) {
+  const wasActive = Date.now() < _useFallbackUntil;
+  if (!wasActive) {
+    console.log(`[RPC] 429 detected → switching to fallback RPC`);
+    console.log(`[RPC] Fallback RPC used for ${opName}`);
+  }
+  _useFallbackUntil = Date.now() + RPC_FALLBACK_WINDOW_MS;
+}
+
 export function getConnection() {
   const { Connection } = require("@solana/web3.js");
-  return new Connection(config.rpcUrl, { commitment: "confirmed" });
+  const fallbackActive = Date.now() < _useFallbackUntil && config.rpcUrlFallback;
+  const url = fallbackActive ? config.rpcUrlFallback : config.rpcUrl;
+  return new Connection(url, { commitment: "confirmed" });
+}
+
+// Wraps an RPC-touching op: on 429, sticky-switch to fallback and retry once.
+export async function withRpcFallback(asyncFn, opName) {
+  try {
+    return await asyncFn();
+  } catch (err) {
+    if (isRpcRateLimitError(err) && config.rpcUrlFallback) {
+      markRpcRateLimited(opName);
+      return await asyncFn();
+    }
+    throw err;
+  }
 }
 
 export async function initWallet() {
@@ -165,8 +200,10 @@ export function getAgentWalletAddress() { return _walletAddress; }
 export async function checkWalletBalance() {
   try {
     const wallet = await getWallet();
-    const connection = getConnection();
-    const balance = await connection.getBalance(wallet.publicKey);
+    const balance = await withRpcFallback(
+      () => getConnection().getBalance(wallet.publicKey),
+      "checkWalletBalance"
+    );
     return balance / 1e9;
   } catch (err) {
     console.error("Balance check failed:", err.message);
@@ -260,8 +297,8 @@ export async function openPosition(decision) {
     console.log(`  📐 Strategy: ${strategy ?? "spot"} → strategyType=${strategyType}`);
 
     // Retry on ExceededBinSlippageTolerance (AnchorError 6004): the active bin can
-    // shift between quote and execution, so we start at 1% slippage and double to 2%
-    // on a single bin-slippage failure before surfacing the error.
+    // shift between quote and execution. Start at 1%, jump to 4% on a single
+    // bin-slippage failure — 2% wasn't enough for pumping memes with 1%-bin steps.
     let sig;
     let slippage = 1;
     const MAX_SLIPPAGE_ATTEMPTS = 2;
@@ -282,9 +319,16 @@ export async function openPosition(decision) {
         sig = await sendAndConfirmTransaction(connection, tx, [wallet, positionKeypair]);
         break;
       } catch (err) {
-        const isBinSlippage = /6004|ExceededBinSlippageTolerance/i.test(err?.message ?? "");
+        // Solana RPC errors stuff the 6004 code into err.logs (array) and
+        // err.simulationResponse — not err.message. Check all three.
+        const msgParts = [
+          err?.message,
+          ...(err?.logs ?? []),
+          JSON.stringify(err?.simulationResponse ?? {}),
+        ].join("\n");
+        const isBinSlippage = /6004|ExceededBinSlippageTolerance/i.test(msgParts);
         if (isBinSlippage && attempt < MAX_SLIPPAGE_ATTEMPTS) {
-          slippage *= 2;
+          slippage = 4;
           console.log(`[Position] Retry with higher slippage tolerance (${slippage}%)`);
           continue;
         }
@@ -376,8 +420,12 @@ export async function closePosition(positionId, closeMeta = {}) {
       } catch {}
     };
 
-    // Check if position already closed on-chain before attempting TX
-    const preCheck = await connection.getAccountInfo(new PublicKey(pos.positionAddress));
+    // Check if position already closed on-chain before attempting TX.
+    // Wrap in withRpcFallback: a 429 here cascades into the whole close-retry loop.
+    const preCheck = await withRpcFallback(
+      () => getConnection().getAccountInfo(new PublicKey(pos.positionAddress)),
+      "closePosition.preCheck"
+    );
     if (preCheck === null) {
       console.log(`⚠️ Position ${pos.positionAddress.slice(0,8)} already gone on-chain — cleaning up local state`);
       await _setCooldownForPos(pos);
@@ -450,6 +498,8 @@ export async function closePosition(positionId, closeMeta = {}) {
         break;
       } catch (err) {
         lastErr = err;
+        // If this failure was 429, flip to fallback RPC for subsequent retries.
+        if (isRpcRateLimitError(err)) markRpcRateLimited("closePosition");
         console.warn(`⚠️ Close attempt ${attempt}/${MAX_ATTEMPTS} failed: ${err.message}`);
       }
     }

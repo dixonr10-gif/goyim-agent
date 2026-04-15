@@ -3,9 +3,12 @@
 import fs from "fs";
 import path from "path";
 import { config } from "../config.js";
+import { isStrictHours } from "./timeHelper.js";
 
 const LAST_RUN_FILE = path.resolve("data/lastRun.json");
-const HEALER_STALE_MINUTES = 5;
+const HEALER_STALE_MINUTES = 3;
+const HUNTER_STALE_MINUTES_STRICT = 35;
+const HUNTER_STALE_MINUTES_NORMAL = 15;
 const MIN_SOL_BALANCE = 0.5;
 
 // ─── Record last run timestamps ──────────────────────────────────────
@@ -42,8 +45,9 @@ export async function runHealthCheck(notifyFn) {
 
     if (hunterLast) {
       const minAgo = (Date.now() - hunterLast.getTime()) / 60_000;
-      if (minAgo > 20) {
-        issues.push(`Hunter last run: ${minAgo.toFixed(0)}m ago (STALE)`);
+      const hunterThreshold = isStrictHours() ? HUNTER_STALE_MINUTES_STRICT : HUNTER_STALE_MINUTES_NORMAL;
+      if (minAgo > hunterThreshold) {
+        issues.push(`Hunter last run: ${minAgo.toFixed(0)}m ago (STALE, threshold ${hunterThreshold}m ${isStrictHours() ? "strict" : "normal"})`);
       }
     }
   } catch {
