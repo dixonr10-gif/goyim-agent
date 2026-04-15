@@ -14,7 +14,7 @@ import { getRecentLessonsForLLM } from "./postTradeAnalyzer.js";
 import { maybeLearnPatterns, getPatternsForLLM } from "./patternLearner.js";
 import { notifyPositionOpened, notifyPositionClosed, notifyAgentDecision, notifyError, notifyMessage, isAgentPaused, esc } from "./telegramBot.js";
 import { autoSwapTokensToSOL } from "./autoSwap.js";
-import { isOnCooldown, getCooldownRemaining, extractTokenSymbol, setCooldown } from "./cooldownManager.js";
+import { isOnCooldown, getCooldownRemaining, extractTokenSymbol, setCooldown, isBlockedByMaxCap } from "./cooldownManager.js";
 import { isTokenBlacklisted, decayBlacklist } from "./blacklistManager.js";
 import { checkSmartWalletOverlap } from "./smartWallets.js";
 import { recordLastRun } from "./healthCheck.js";
@@ -348,9 +348,15 @@ export async function runHunter() {
     if (safePools.length === 0) { console.log("⚠️ All pools filtered."); return; }
 
     // Cooldown filter: skip tokens traded in the last TOKEN_COOLDOWN_HOURS
+    // Also enforces max-deploy cap (MAX_DEPLOY_PER_24H) independent of cooldown
+    // expiry — stops the same token from being recycled >N times in 24h.
     console.log("\n⏳ Checking token cooldowns...");
     const readyPools = safePools.filter(pool => {
       const symbol = extractTokenSymbol(pool.name);
+      if (symbol && isBlockedByMaxCap(symbol)) {
+        console.log(`  ⏭️ Skip ${pool.name}: ${symbol} max-deploy cap hit for 24h`);
+        return false;
+      }
       if (symbol && isOnCooldown(symbol)) {
         console.log(`  ⏭️ Skip ${pool.name}: ${symbol} on cooldown (${getCooldownRemaining(symbol)} remaining)`);
         return false;
@@ -370,22 +376,22 @@ export async function runHunter() {
     });
     if (nonBlacklisted.length === 0) { console.log("⚠️ All pools blacklisted."); return; }
 
-    // Fee APR pre-filter: prefer Meteora's pool.apr; if that's 0/missing (Meteora
-    // often returns 0 during quiet fee windows) compute from vol × binStep / tvl × 365
-    // via getEffectiveApr so we don't drop otherwise-valid pools.
-    const MIN_FEE_APR = config.minFeeAprFilter ?? 10;
+    // Daily Fee/TVL pre-filter: prefer pool.fees["24h"] / tvl; fallback to
+    // vol × binStep / tvl via getEffectiveApr. Value is in daily % (e.g. 8 = 8% per day).
+    const MIN_FEE_APR = config.minFeeAprFilter ?? 7;
     const feeFiltered = nonBlacklisted.filter(pool => {
       const feeApr = getEffectiveApr(pool);
       const sym = (pool.name ?? "").split(/[-\/]/)[0];
-      const source = (typeof pool.apr === "number" && pool.apr > 0) ? "meteora" : "computed";
+      const source = (pool?.fees?.["24h"] ?? 0) > 0 ? "fees24h" : "computed";
       if (!feeApr || feeApr <= 0) {
-        console.log(`  [PreFilter] ${sym} SKIP — Fee APR null (no data)`);
+        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL null (no data)`);
         return false;
       }
       if (feeApr < MIN_FEE_APR) {
-        console.log(`  [PreFilter] ${sym} SKIP — Fee APR ${feeApr.toFixed(2)}% [${source}] < ${MIN_FEE_APR}%`);
+        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL ${feeApr.toFixed(2)}% [${source}] < ${MIN_FEE_APR}%`);
         return false;
       }
+      console.log(`  [PreFilter] ${sym} OK — Daily Fee/TVL ${feeApr.toFixed(2)}% [${source}]`);
       return true;
     });
     if (feeFiltered.length === 0) { console.log("⚠️ All pools below fee APR floor."); return; }

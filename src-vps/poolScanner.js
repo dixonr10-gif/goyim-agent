@@ -10,23 +10,17 @@ const SKIP_TOKENS = [
 let _lastScanResults = [];
 export function getLastCandidates() { return _lastScanResults; }
 
-/**
- * Meteora datapi's `pool.apr` is a short-window annualization that frequently reads 0
- * for active meme pools during quiet fee windows. When that happens, compute APR
- * ourselves from 24h volume × fee rate / TVL × 365 so downstream filters see a
- * usable number. Returns a percent value (e.g. 3650 = 3650% APR).
- */
+// Returns Daily Fee/TVL in percent (e.g. 8 = 8% daily). Prefer pool.fees["24h"]
+// if present; otherwise compute from 24h volume × binStep fee rate / TVL.
 export function getEffectiveApr(pool) {
-  const raw = typeof pool?.apr === "number" ? pool.apr : 0;
-  if (raw > 0) return raw;
-  const vol24h = pool?.volume?.["24h"] ?? 0;
   const tvl = pool?.tvl ?? 0;
-  // DexTrending-sourced pools don't carry pool_config.bin_step; fall back to
-  // 100 bps (1%) — the most common Meteora meme tier — so fallback still
-  // computes a reasonable APR. Real Meteora-sourced pools always carry bin_step.
+  if (tvl <= 0) return 0;
+  const fees24h = pool?.fees?.["24h"] ?? 0;
+  if (fees24h > 0) return (fees24h / tvl) * 100;
+  const vol24h = pool?.volume?.["24h"] ?? 0;
   const binStep = pool?.pool_config?.bin_step ?? 100;
-  if (vol24h <= 0 || tvl <= 0) return 0;
-  return (vol24h * binStep * 0.01 / tvl) * 365;
+  if (vol24h <= 0) return 0;
+  return (vol24h * binStep * 0.01 / tvl) * 100;
 }
 
 function calculateOrganicScore(pool, dexPair) {
@@ -72,9 +66,9 @@ function calculateOrganicScore(pool, dexPair) {
     }
   }
 
-  // High APR: only penalize extreme outliers, not normal meme APR
-  if (apr > 5000) score -= 10;
-  else if (apr > 2000) score -= 5;
+  // High Daily Fee/TVL: only penalize extreme outliers, not normal meme pools
+  if (apr > 14) score -= 10;
+  else if (apr > 5.5) score -= 5;
 
   // High fee/TVL = real fees, not wash → bonus
   const feeRatio = vol24h / tvl;
@@ -202,7 +196,7 @@ export async function scanPools() {
       const apr = getEffectiveApr(p);
       if (vol < 50_000) return false;
       if (tvl < 5_000) return false;
-      if (apr < 10) return false;
+      if (apr < 1) return false;
       if (isStablecoinOnly(p.name)) return false;
       const ageMin = getPoolAgeMinutes(p);
       if (ageMin !== null && ageMin < 5) return false;

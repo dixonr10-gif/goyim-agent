@@ -151,12 +151,12 @@ function registerCommands() {
     const tp = process.env.TAKE_PROFIT_PERCENT ?? "5";
     const sl = process.env.STOP_LOSS_PERCENT ?? "-3";
     const mh = process.env.MAX_HOLD_HOURS ?? "3";
-    const minFeeApr = c.minFeeAprFilter ?? (Number(process.env.MIN_FEE_APR_FILTER) || 10);
+    const minFeeApr = c.minFeeAprFilter ?? (Number(process.env.MIN_FEE_APR_FILTER) || 7);
     const minFeeAprHold = parseFloat(process.env.MIN_FEE_APR_TO_HOLD) || 10;
     const msg =
       `<b>⚙️ Current Thresholds</b>\n${"─".repeat(25)}\n\n` +
       `Min Volume 24h: <b>$${(c.minPoolVolumeUsd / 1000).toFixed(0)}k</b>\n` +
-      `Min Fee APR: <b>${minFeeApr}%</b>\n` +
+      `Min Daily Fee/TVL: <b>${minFeeApr}%</b>\n` +
       `Max TVL: <b>$${(c.maxTvlUsd / 1000).toFixed(0)}k</b>\n` +
       `Min Organic Score: <b>${c.minOrganicScore}/100</b>\n\n` +
       `Max SOL/position: <b>${c.maxSolPerPosition} SOL</b>\n` +

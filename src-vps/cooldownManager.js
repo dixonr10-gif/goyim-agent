@@ -9,6 +9,8 @@ import path from "path";
 
 const COOLDOWN_FILE = path.resolve("data/token_cooldown.json");
 const DEFAULT_HOURS = Number(process.env.TOKEN_COOLDOWN_HOURS) || 0.5;
+const MAX_DEPLOY_PER_24H = Number(process.env.MAX_DEPLOY_PER_24H) || 5;
+const WINDOW_MS = 24 * 3_600_000;
 
 const QUOTE_TOKENS = ["USDC", "USDT", "SOL", "WSOL", "WBTC", "WETH", "BUSD", "DAI", "MSOL", "JITOSOL"];
 
@@ -25,6 +27,24 @@ const COOLDOWN_HOURS_BY_REASON = {
   MAX_HOLD_PROFIT: 0.25,
   OOR_RIGHT: 0.5,
 };
+
+// Tiered escalation by deploy count within rolling 24h window.
+// Count includes the close that's being recorded. Increases exposure penalty
+// as the same token gets recycled — stops the "RND/Goku 11× in 48h" pattern.
+function resolveTieredHours(count) {
+  if (count <= 1) return 0.5;  // 30m — first close
+  if (count === 2) return 1;   // 1h  — second
+  if (count === 3) return 4;   // 4h  — third
+  return 24;                    // 24h — fourth+
+}
+
+function pruneDeploys(entry) {
+  if (!entry || typeof entry !== "object") return entry;
+  const cutoff = Date.now() - WINDOW_MS;
+  const deploys = Array.isArray(entry.deploys24h) ? entry.deploys24h : [];
+  entry.deploys24h = deploys.filter(ts => new Date(ts).getTime() >= cutoff);
+  return entry;
+}
 
 export function extractTokenSymbol(poolName) {
   if (!poolName) return null;
@@ -95,18 +115,52 @@ export function setCooldown(tokenSymbol, opts = {}) {
   if (!tokenSymbol) return;
   const { reason = null, pnlPct = null } = opts;
   const key = tokenSymbol.toUpperCase();
-  const hours = resolveHours(reason, pnlPct);
   const data = load();
   const now = Date.now();
+
+  const existing = pruneDeploys(data[key]) ?? {};
+  const deploys = Array.isArray(existing.deploys24h) ? [...existing.deploys24h] : [];
+  deploys.push(new Date(now).toISOString());
+
+  const tieredHours = resolveTieredHours(deploys.length);
+  const reasonHours = resolveHours(reason, pnlPct);
+  const hours = Math.max(tieredHours, reasonHours);
+
   data[key] = {
     setAt: new Date(now).toISOString(),
     expiresAt: new Date(now + hours * 3_600_000).toISOString(),
     reason: reason ?? "DEFAULT",
     pnlPct: typeof pnlPct === "number" ? parseFloat(pnlPct.toFixed(2)) : null,
+    tier: deploys.length,
+    deploys24h: deploys,
   };
   save(data);
   const pnlStr = typeof pnlPct === "number" ? ` pnl=${pnlPct.toFixed(1)}%` : "";
-  console.log(`  🔒 Cooldown set: ${key} ${hours}h [${reason ?? "DEFAULT"}${pnlStr}]`);
+  console.log(`  🔒 Cooldown set: ${key} ${hours}h [${reason ?? "DEFAULT"}${pnlStr}] tier=${deploys.length}/24h (tiered=${tieredHours}h, reason=${reasonHours}h)`);
+}
+
+// Max-cap: block new opens if token already recycled MAX_DEPLOY_PER_24H times
+// in the rolling 24h window. Check BEFORE opening — cooldown alone won't stop
+// a 5th+ entry if the previous cooldown happens to have expired.
+export function isBlockedByMaxCap(tokenSymbol) {
+  if (!tokenSymbol) return false;
+  const key = tokenSymbol.toUpperCase();
+  const data = load();
+  const entry = pruneDeploys(data[key]);
+  if (!entry || !Array.isArray(entry.deploys24h)) return false;
+  const count = entry.deploys24h.length;
+  if (count >= MAX_DEPLOY_PER_24H) {
+    console.log(`  🚫 ${key} max-deploy cap: ${count}/${MAX_DEPLOY_PER_24H} in 24h — blocked`);
+    return true;
+  }
+  return false;
+}
+
+export function getDeployCount24h(tokenSymbol) {
+  if (!tokenSymbol) return 0;
+  const data = load();
+  const entry = pruneDeploys(data[tokenSymbol.toUpperCase()]);
+  return entry && Array.isArray(entry.deploys24h) ? entry.deploys24h.length : 0;
 }
 
 export function getCooldownRemaining(tokenSymbol) {
