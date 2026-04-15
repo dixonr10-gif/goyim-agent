@@ -20,6 +20,8 @@ import path from "path";
 const AUTO_SWAP_ENABLED = process.env.AUTO_SWAP_ENABLED !== "false";
 const AUTO_SWAP_MIN_USD = Number(process.env.AUTO_SWAP_MIN_USD) || 1;
 const PENDING_SWAPS_FILE = path.resolve("data/pending_swaps.json");
+const FAILED_SWAPS_FILE  = path.resolve("data/failed_swaps.json");
+const FAIL_COOLDOWN_MS   = 24 * 60 * 60 * 1000; // 24h skip window
 
 function loadPendingSwaps() {
   try { return JSON.parse(fs.readFileSync(PENDING_SWAPS_FILE, "utf-8")); } catch { return []; }
@@ -39,6 +41,26 @@ function removePendingSwap(tokenMint) {
   savePendingSwaps(pending);
 }
 
+// Hard-fail cache: after 3 attempts we stop retrying a mint for 24h so the
+// logs don't get flooded with the same failed swap (rug/frozen tokens, etc.).
+function loadFailedSwaps() {
+  try { return JSON.parse(fs.readFileSync(FAILED_SWAPS_FILE, "utf-8")); } catch { return []; }
+}
+function saveFailedSwaps(swaps) {
+  try { fs.mkdirSync(path.dirname(FAILED_SWAPS_FILE), { recursive: true }); fs.writeFileSync(FAILED_SWAPS_FILE, JSON.stringify(swaps, null, 2)); } catch {}
+}
+function addFailedSwap({ symbol, tokenMint, amount, reason }) {
+  const list = loadFailedSwaps().filter(s => s.tokenMint !== tokenMint);
+  list.push({ symbol: symbol ?? null, tokenMint, amount, failedAt: new Date().toISOString(), reason: reason ?? null });
+  saveFailedSwaps(list);
+}
+function isFailedRecently(tokenMint) {
+  const list = loadFailedSwaps();
+  const match = list.find(s => s.tokenMint === tokenMint);
+  if (!match?.failedAt) return false;
+  return (Date.now() - new Date(match.failedAt).getTime()) < FAIL_COOLDOWN_MS;
+}
+
 async function fetchDexScreenerPrice(mint) {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {
@@ -49,9 +71,10 @@ async function fetchDexScreenerPrice(mint) {
     const pairs = (data?.pairs ?? []).filter(p => parseFloat(p.priceUsd ?? "0") > 0);
     pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
     const price = parseFloat(pairs[0]?.priceUsd ?? "0");
-    return price;
+    const symbol = pairs[0]?.baseToken?.symbol ?? null;
+    return { price, symbol };
   } catch {
-    return 0;
+    return { price: 0, symbol: null };
   }
 }
 
@@ -188,7 +211,15 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
     const swappable = [];
     for (const t of tokens) {
       const mintShort = t.mint.slice(0, 8);
-      let price = await fetchDexScreenerPrice(t.mint);
+      // Skip tokens that already hard-failed in the last 24h so we don't
+      // flood logs with the same dead swap every healer cycle.
+      if (isFailedRecently(t.mint)) {
+        console.log(`[AutoSwap] ${mintShort}... skipped — in failed_swaps (24h cooldown)`);
+        continue;
+      }
+      const { price: dexPrice, symbol: dexSymbol } = await fetchDexScreenerPrice(t.mint);
+      let price = dexPrice;
+      const symbol = dexSymbol ?? mintShort;
       let usdValue = price * t.uiAmount;
       console.log(`[autoSwap] ${mintShort}...: DexScreener price=$${price.toFixed(6)} | amount=${t.uiAmount} | value=$${usdValue.toFixed(4)}`);
 
@@ -206,7 +237,7 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
       if (usdValue < AUTO_SWAP_MIN_USD) {
         console.log(`[autoSwap] Skip ${mintShort}...: estimated $${usdValue.toFixed(4)} < $${AUTO_SWAP_MIN_USD} min`);
       } else {
-        swappable.push({ ...t, price, usdValue });
+        swappable.push({ ...t, price, usdValue, symbol });
       }
     }
 
@@ -219,7 +250,9 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
 
     for (const token of swappable) {
       const mintShort = token.mint.slice(0, 8);
-      const SLIPPAGE_TIERS = [100, 300, 500, 1000];
+      // Cap at 3 attempts — rug/frozen tokens tend to fail identically at every
+      // slippage; 4th tier (1000 bps) historically never rescues one.
+      const SLIPPAGE_TIERS = [100, 300, 500];
 
       // Check for route existence first with a single quote
       let hasRoute = true;
@@ -235,6 +268,7 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
       if (!hasRoute) continue;
 
       let swapped = false;
+      let lastReason = null;
       for (const slippage of SLIPPAGE_TIERS) {
         try {
           console.log(`🔄 Swapping ${mintShort}... (${token.uiAmount}) ~$${token.usdValue.toFixed(2)} [slippage=${slippage}bps]`);
@@ -274,6 +308,7 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
           swapped = true;
           break;
         } catch (err) {
+          lastReason = err.message?.slice(0, 200) ?? null;
           console.warn(`⚠️ Swap ${mintShort} failed [${slippage}bps]: ${err.message?.slice(0, 80)}`);
           if (slippage < SLIPPAGE_TIERS[SLIPPAGE_TIERS.length - 1]) {
             await new Promise(r => setTimeout(r, 2000));
@@ -281,9 +316,11 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
         }
       }
       if (!swapped) {
-        console.log(`[AutoSwap] ${mintShort} failed all tiers → queued as pending`);
-        addPendingSwap(token.mint, token.amount, token.usdValue);
-        await notifyTemp(`⚠️ Swap pending: ${mintShort} belum ke-swap (~$${token.usdValue.toFixed(2)})\nAkan dicoba lagi di healer cycle berikutnya`);
+        console.log(`[AutoSwap] ${token.symbol} failed after 3 attempts → skip`);
+        addFailedSwap({ symbol: token.symbol, tokenMint: token.mint, amount: token.amount, reason: lastReason });
+        // Clean up any legacy pending-swap entry so retryPendingSwaps stops picking it up.
+        removePendingSwap(token.mint);
+        await notifyTemp(`⚠️ Auto-swap gagal 3x: ${token.symbol} (~$${token.usdValue.toFixed(2)}) → skip 24h`);
       } else {
         removePendingSwap(token.mint);
       }
