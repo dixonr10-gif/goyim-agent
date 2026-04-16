@@ -73,18 +73,25 @@ setInterval(() => {
 let _lastStrictNotif = null;
 setInterval(() => {
   const h = getWIBHour();
-  const endHour = parseInt(process.env.ACTIVE_HOURS_END) || 18;
-  if (h === 14 && _lastStrictNotif !== "enter") {
+  const startHour = parseInt(process.env.ACTIVE_HOURS_START) || 13;
+  const startMin = parseInt(process.env.ACTIVE_HOURS_START_MIN) || 30;
+  const endHour = parseInt(process.env.ACTIVE_HOURS_END) || 20;
+  const endMin = parseInt(process.env.ACTIVE_HOURS_END_MIN) || 30;
+  const maxHold = process.env.MAX_HOLD_HOURS ?? "3";
+  const pad = (n) => String(n).padStart(2, "0");
+  const startStr = `${pad(startHour)}:${pad(startMin)}`;
+  const endStr = `${pad(endHour)}:${pad(endMin)}`;
+  if (h === startHour && _lastStrictNotif !== "enter") {
     _lastStrictNotif = "enter";
     notifyMessage(
-      `⚠️ <b>Strict Hours Aktif</b>\n\n🕑 14:00 - 18:00 WIB\n📉 SL: -6% → <b>-4%</b>\n🎯 TP activation: +6% → <b>+4%</b>\n📊 Trail: -3% → <b>-2%</b>\n💰 Min volume: $100k → <b>$200k</b>\n⏱ Max hold: 48h → <b>2h</b>\n🔄 OOR kanan: 35m → <b>20m</b>\n🔄 OOR kiri: 15m → <b>10m</b>\n\nBot tetap jalan tapi lebih selektif!`
+      `⚠️ <b>Strict Hours Aktif</b>\n\n🕑 ${startStr} - ${endStr} WIB\n📉 SL: -6% → <b>-4%</b>\n🎯 TP activation: +6% → <b>+4%</b>\n📊 Trail: -3% → <b>-2%</b>\n💰 Min volume: $100k → <b>$200k</b>\n⏱ Max hold: ${maxHold}h → <b>2h</b>\n🔄 OOR kanan: 35m → <b>20m</b>\n🔄 OOR kiri: 15m → <b>10m</b>\n\nBot tetap jalan tapi lebih selektif!`
     ).catch(() => {});
   } else if (h === endHour && _lastStrictNotif !== "exit") {
     _lastStrictNotif = "exit";
     notifyMessage(
-      `✅ <b>Normal Hours</b>\n\n🕕 18:00 WIB - parameter kembali normal\n📉 SL: -6% | 🎯 TP: +6% | 📊 Trail: -3%\n💰 Min volume: $100k\n⏱ Max hold: 48h | 🔄 OOR: 35m/15m`
+      `✅ <b>Normal Hours</b>\n\n🕕 ${endStr} WIB - parameter kembali normal\n📉 SL: -6% | 🎯 TP: +6% | 📊 Trail: -3%\n💰 Min volume: $100k\n⏱ Max hold: ${maxHold}h | 🔄 OOR: 35m/15m`
     ).catch(() => {});
-  } else if (h !== 14 && h !== endHour) {
+  } else if (h !== startHour && h !== endHour) {
     _lastStrictNotif = null;
   }
 }, 5 * 60 * 1000);
