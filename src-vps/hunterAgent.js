@@ -20,7 +20,7 @@ import { checkSmartWalletOverlap } from "./smartWallets.js";
 import { recordLastRun } from "./healthCheck.js";
 import { recordHunterRunResult } from "./thresholdEvolver.js";
 import { getPoolScoreAdjustment, recordPoolDeploy } from "./poolMemory.js";
-import { getCandles, getTASignal } from "./technicalAnalysis.js";
+import { getCandles, getTASignal, getTAFromPriceChanges } from "./technicalAnalysis.js";
 import { isStrictHours, formatWIB, getWIBHour } from "./timeHelper.js";
 
 let hunterIteration = 0;
@@ -419,22 +419,23 @@ export async function runHunter() {
     });
     if (nonBlacklisted.length === 0) { console.log("⚠️ All pools blacklisted."); return; }
 
-    // Daily Fee/TVL pre-filter: prefer pool.fees["24h"] / tvl; fallback to
-    // vol × binStep / tvl via getEffectiveApr. Value is in daily % (e.g. 8 = 8% per day).
+    // Daily Fee/TVL pre-filter: strictly from pool.fees["24h"] / tvl.
+    // vol×binStep fallback was removed — high-binStep pools (e.g. BULL
+    // binStep=200) passed with fake 200%+ APR despite real yield <1%.
     const MIN_FEE_APR = config.minFeeAprFilter ?? 7;
     const feeFiltered = nonBlacklisted.filter(pool => {
-      const feeApr = getEffectiveApr(pool);
       const sym = (pool.name ?? "").split(/[-\/]/)[0];
-      const source = (pool?.fees?.["24h"] ?? 0) > 0 ? "fees24h" : "computed";
-      if (!feeApr || feeApr <= 0) {
-        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL null (no data)`);
+      const rawFees24h = pool?.fees?.["24h"] ?? 0;
+      if (!rawFees24h || rawFees24h <= 0) {
+        console.log(`  [Hunter] ⛔️ NO_FEE_DATA ${pool.name}: fees24h unavailable — skip`);
         return false;
       }
+      const feeApr = getEffectiveApr(pool);
       if (feeApr < MIN_FEE_APR) {
-        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL ${feeApr.toFixed(2)}% [${source}] < ${MIN_FEE_APR}%`);
+        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL ${feeApr.toFixed(2)}% [fees24h] < ${MIN_FEE_APR}%`);
         return false;
       }
-      console.log(`  [PreFilter] ${sym} OK — Daily Fee/TVL ${feeApr.toFixed(2)}% [${source}]`);
+      console.log(`  [PreFilter] ${sym} OK — Daily Fee/TVL ${feeApr.toFixed(2)}% [fees24h]`);
       return true;
     });
     if (feeFiltered.length === 0) { console.log("⚠️ All pools below fee APR floor."); return; }
@@ -610,7 +611,14 @@ export async function runHunter() {
           taMap.set(pool.address, ta);
           console.log(`  📊 ${pool.name}: RSI ${ta.rsi?.toFixed(1) ?? "?"} | EMA20 ${ta.ema20?.toFixed(6) ?? "?"} | ${ta.signal}`);
         } else {
-          console.log(`  ⚠️ TA: No candle data for ${pool.name}, skipping TA filter`);
+          const reason = !pool.dexPair ? "no dexPair (scanner enrichment miss)"
+            : !(parseFloat(pool.dexPair.priceUsd ?? 0) > 0) ? "dexPair priceUsd invalid"
+            : "search fallback failed";
+          const proxyTa = getTAFromPriceChanges({
+            m5: pool._mtf?.m5, h1: pool._mtf?.h1, h6: pool._mtf?.h6, uptrend: pool.uptrend,
+          });
+          taMap.set(pool.address, proxyTa);
+          console.log(`  📊 ${pool.name}: PROXY TA (${reason}) → ${proxyTa.signal} — ${proxyTa.reason}`);
         }
       } catch (err) {
         console.log(`  ⚠️ TA error for ${pool.name}: ${err.message}`);
@@ -725,7 +733,10 @@ export async function runHunter() {
               effective1h = priceChange5m * 12;
               proxyFrom5m = true;
             }
-            if (effective1h != null && effective1h >= 2 && effective1h <= 40) {
+            if (effective1h != null && (
+              (effective1h >= 1 && effective1h <= 40) ||
+              (pool.uptrend === true && effective1h > 0)
+            )) {
               decision.strategy = "bidask";
               const tag = proxyFrom5m ? " (proxy from 5m)" : "";
               console.log(`  [Strategy] BidAsk — 1h +${effective1h.toFixed(1)}%${tag}`);
@@ -888,19 +899,30 @@ export async function runHunter() {
             // ── TA filter (RSI + EMA20) before opening ──────────────
             if (!momentumSkip) {
               let ta = taMap.get(pool.address);
+              const rawPoolData = nonBlacklisted.find(p => p.address === pool.address);
               if (!ta) {
                 try {
-                  const rawPoolData = nonBlacklisted.find(p => p.address === pool.address);
                   const candles = await getCandles(pool.address, rawPoolData?.dexPair ?? null);
                   if (candles) ta = getTASignal(candles);
-                  else console.log(`  ⚠️ TA: No candle data for ${pool.name}, skipping TA filter`);
+                  else {
+                    const reason = !rawPoolData?.dexPair ? "no dexPair (scanner enrichment miss)"
+                      : !(parseFloat(rawPoolData.dexPair.priceUsd ?? 0) > 0) ? "dexPair priceUsd invalid"
+                      : "search fallback failed";
+                    ta = getTAFromPriceChanges({
+                      m5: rawPoolData?._mtf?.m5, h1: rawPoolData?._mtf?.h1,
+                      h6: rawPoolData?._mtf?.h6, uptrend: rawPoolData?.uptrend,
+                    });
+                    console.log(`  📊 TA: PROXY (${reason}) → ${ta.signal} — ${ta.reason}`);
+                  }
                 } catch {}
               }
               if (ta && ta.signal === "SKIP") {
                 console.log(`  ⛔ TA Skip: ${pool.name} — ${ta.reason}`);
                 momentumSkip = true;
               } else if (ta) {
-                console.log(`  📊 TA: RSI ${ta.rsi.toFixed(1)} | EMA20 ${ta.ema20.toFixed(6)} | ${ta.signal}`);
+                const rsiStr = ta.rsi != null ? ta.rsi.toFixed(1) : "proxy";
+                const emaStr = ta.ema20 != null ? ta.ema20.toFixed(6) : "proxy";
+                console.log(`  📊 TA: RSI ${rsiStr} | EMA20 ${emaStr} | ${ta.signal}`);
                 decision.ta = ta;
               }
             }

@@ -129,6 +129,26 @@ export function calculateEMA(candles, period = 20) {
   return ema;
 }
 
+// Proxy TA signal when real candles aren't available (new token / API miss).
+// Uses multi-timeframe priceChange + uptrend flag as approximation.
+export function getTAFromPriceChanges({ m5, h1, h6, uptrend } = {}) {
+  const _m5 = Number.isFinite(m5) ? m5 : null;
+  const _h1 = Number.isFinite(h1) ? h1 : null;
+  const _h6 = Number.isFinite(h6) ? h6 : null;
+
+  if (_m5 !== null && _h1 !== null && _m5 < 0 && _h1 < -2) {
+    return { rsi: null, ema20: null, currentPrice: null, signal: "SKIP", reason: `proxy dump m5 ${_m5.toFixed(1)}% h1 ${_h1.toFixed(1)}%`, source: "proxy" };
+  }
+  if (_h6 !== null && _h6 > 170) {
+    return { rsi: null, ema20: null, currentPrice: null, signal: "SKIP", reason: `proxy overbought h6 +${_h6.toFixed(0)}%`, source: "proxy" };
+  }
+  const sig = uptrend === true ? "BUY" : "NEUTRAL";
+  const parts = [];
+  if (_h1 !== null) parts.push(`h1 ${_h1 >= 0 ? "+" : ""}${_h1.toFixed(1)}%`);
+  parts.push(`uptrend=${uptrend === true ? "true" : "false"}`);
+  return { rsi: null, ema20: null, currentPrice: null, signal: sig, reason: `proxy ${parts.join(" ")}`, source: "proxy" };
+}
+
 export function getTASignal(candles) {
   if (!candles || candles.length < 15) {
     return { rsi: null, ema20: null, currentPrice: null, signal: "NEUTRAL", reason: "insufficient candle data" };

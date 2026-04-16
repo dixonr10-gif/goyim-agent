@@ -10,7 +10,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 import { recordLastRun } from "./healthCheck.js";
 import { recordTradeClose, getFullStats } from "./tradeMemory.js";
 import { maybeEvolveThresholds } from "./thresholdEvolver.js";
-import { analyzeClosedTrade } from "./postTradeAnalyzer.js";
+import { analyzeClosedTrade, reviewClosedTrade } from "./postTradeAnalyzer.js";
 import { notifyPositionClosed, notifyError, notifyMessage, isAgentPaused, esc } from "./telegramBot.js";
 import { autoSwapTokensToSOL, retryPendingSwaps } from "./autoSwap.js";
 import { recordTokenLoss, recordOORStrike } from "./blacklistManager.js";
@@ -150,6 +150,11 @@ export async function runHealer() {
           const holdMin = parseFloat(closedTrade.holdDurationHours ?? 0) * 60;
           try { recordPoolClose(pos?.pool, parseFloat(closedTrade.pnlPercent ?? 0), closedTrade.outcome, holdMin); } catch {}
           analyzeClosedTrade(closedTrade, {}).catch(() => {});
+          try {
+            const reviewSym = (pos?.poolName ?? closedTrade.poolName ?? "?").split(/[-\/]/)[0];
+            console.log(`[PostTradeReview] Reviewing ${reviewSym}...`);
+            reviewClosedTrade(closedTrade).catch(() => {});
+          } catch {}
         }
       } catch (closeErr) {
         console.log(`  [Healer] Close failed for ${exit.positionId}: ${closeErr.message?.slice(0, 80)}`);

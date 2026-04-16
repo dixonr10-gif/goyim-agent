@@ -1,42 +1,20 @@
 // src-vps/cooldownManager.js
-// Token cooldown tracker — per-reason durations.
+// Token cooldown tracker.
 //
-// Losses / risk exits → long cooldown (let the dust settle before re-entering).
-// Profit / neutral exits → short cooldown (re-enter quickly if the opportunity repeats).
+// Rules (see setCooldown):
+//   - Profit exit → 30min cooldown, consecutiveWins += 1
+//   - Loss exit (SL/EMERGENCY or pnl < 0) → 4h cooldown, consecutiveWins = 0
+//   - deploys24h ≥ 4 AND consecutiveWins < 3 → 24h cooldown
+//   - deploys24h ≥ 4 AND consecutiveWins ≥ 3 → normal (up to 6x)
+//   - deploys24h ≥ 6 → 24h cooldown regardless
 
 import fs from "fs";
 import path from "path";
 
 const COOLDOWN_FILE = path.resolve("data/token_cooldown.json");
-const DEFAULT_HOURS = Number(process.env.TOKEN_COOLDOWN_HOURS) || 0.5;
-const MAX_DEPLOY_PER_24H = Number(process.env.MAX_DEPLOY_PER_24H) || 5;
 const WINDOW_MS = 24 * 3_600_000;
 
 const QUOTE_TOKENS = ["USDC", "USDT", "SOL", "WSOL", "WBTC", "WETH", "BUSD", "DAI", "MSOL", "JITOSOL"];
-
-// Hours of cooldown keyed by exit reason.
-// MAX_HOLD is resolved dynamically (loss → MAX_HOLD_LOSS, profit → MAX_HOLD_PROFIT).
-const COOLDOWN_HOURS_BY_REASON = {
-  SL: 3,
-  OOR_LEFT: 1,
-  MAX_HOLD_LOSS: 1,
-  TRAILING_TP: 0.25,
-  FEE_TP: 0.25,
-  TP: 0.25,
-  REBALANCE: 0.25,
-  MAX_HOLD_PROFIT: 0.25,
-  OOR_RIGHT: 0.5,
-};
-
-// Tiered escalation by deploy count within rolling 24h window.
-// Count includes the close that's being recorded. Increases exposure penalty
-// as the same token gets recycled — stops the "RND/Goku 11× in 48h" pattern.
-function resolveTieredHours(count) {
-  if (count <= 1) return 0.5;  // 30m — first close
-  if (count === 2) return 1;   // 1h  — second
-  if (count === 3) return 4;   // 4h  — third
-  return 24;                    // 24h — fourth+
-}
 
 function pruneDeploys(entry) {
   if (!entry || typeof entry !== "object") return entry;
@@ -52,15 +30,18 @@ export function extractTokenSymbol(poolName) {
   return parts.find(p => p.length > 0 && !QUOTE_TOKENS.includes(p)) ?? null;
 }
 
-function resolveHours(reason, pnlPct) {
+// SL/EMERGENCY always loss; otherwise classify by pnl sign. Unknown pnl → neutral
+// (no change to consecutiveWins, default to 30min cooldown).
+function classifyExit(reason, pnlPct) {
   const r = (reason || "").toUpperCase();
-  if (r === "MAX_HOLD") {
-    return (typeof pnlPct === "number" && pnlPct < 0)
-      ? COOLDOWN_HOURS_BY_REASON.MAX_HOLD_LOSS
-      : COOLDOWN_HOURS_BY_REASON.MAX_HOLD_PROFIT;
-  }
-  if (COOLDOWN_HOURS_BY_REASON[r] != null) return COOLDOWN_HOURS_BY_REASON[r];
-  return DEFAULT_HOURS;
+  if (r === "SL" || r === "EMERGENCY" || r === "EMERGENCY_SL") return "loss";
+  if (typeof pnlPct === "number") return pnlPct >= 0 ? "profit" : "loss";
+  return "neutral";
+}
+
+function formatHoursLabel(hours) {
+  if (hours >= 1) return `${hours}h`;
+  return `${Math.round(hours * 60)}min`;
 }
 
 function load() {
@@ -122,26 +103,35 @@ export function setCooldown(tokenSymbol, opts = {}) {
   const deploys = Array.isArray(existing.deploys24h) ? [...existing.deploys24h] : [];
   deploys.push(new Date(now).toISOString());
 
-  const tieredHours = resolveTieredHours(deploys.length);
-  const reasonHours = resolveHours(reason, pnlPct);
-  const hours = Math.max(tieredHours, reasonHours);
+  const prevWins = existing.consecutiveWins ?? 0;
+  const exitType = classifyExit(reason, pnlPct);
+  let consecutiveWins;
+  if (exitType === "profit") consecutiveWins = prevWins + 1;
+  else if (exitType === "loss") consecutiveWins = 0;
+  else consecutiveWins = prevWins;
+
+  const count = deploys.length;
+  let hours;
+  if (count >= 6) hours = 24;
+  else if (count >= 4 && consecutiveWins < 3) hours = 24;
+  else if (exitType === "loss") hours = 4;
+  else hours = 0.5;
 
   data[key] = {
     setAt: new Date(now).toISOString(),
     expiresAt: new Date(now + hours * 3_600_000).toISOString(),
     reason: reason ?? "DEFAULT",
     pnlPct: typeof pnlPct === "number" ? parseFloat(pnlPct.toFixed(2)) : null,
-    tier: deploys.length,
+    consecutiveWins,
     deploys24h: deploys,
   };
   save(data);
-  const pnlStr = typeof pnlPct === "number" ? ` pnl=${pnlPct.toFixed(1)}%` : "";
-  console.log(`  🔒 Cooldown set: ${key} ${hours}h [${reason ?? "DEFAULT"}${pnlStr}] tier=${deploys.length}/24h (tiered=${tieredHours}h, reason=${reasonHours}h)`);
+  console.log(`[Cooldown] ${key}: ${reason ?? "DEFAULT"} → ${formatHoursLabel(hours)} cooldown, consecutiveWins=${consecutiveWins}, deploys24h=${count}`);
 }
 
-// Max-cap: block new opens if token already recycled MAX_DEPLOY_PER_24H times
-// in the rolling 24h window. Check BEFORE opening — cooldown alone won't stop
-// a 5th+ entry if the previous cooldown happens to have expired.
+// Hard-block before open if rule 3 bar says "no": covers the case where the
+// stored cooldown already expired (e.g., agent restart) but deploy count still
+// sits in the penalty window.
 export function isBlockedByMaxCap(tokenSymbol) {
   if (!tokenSymbol) return false;
   const key = tokenSymbol.toUpperCase();
@@ -149,8 +139,13 @@ export function isBlockedByMaxCap(tokenSymbol) {
   const entry = pruneDeploys(data[key]);
   if (!entry || !Array.isArray(entry.deploys24h)) return false;
   const count = entry.deploys24h.length;
-  if (count >= MAX_DEPLOY_PER_24H) {
-    console.log(`  🚫 ${key} max-deploy cap: ${count}/${MAX_DEPLOY_PER_24H} in 24h — blocked`);
+  const wins = entry.consecutiveWins ?? 0;
+  if (count >= 6) {
+    console.log(`  🚫 ${key} deploy cap: ${count}/24h ≥ 6 — blocked`);
+    return true;
+  }
+  if (count >= 4 && wins < 3) {
+    console.log(`  🚫 ${key} deploy cap: ${count}/24h, consecutiveWins=${wins} < 3 — blocked`);
     return true;
   }
   return false;

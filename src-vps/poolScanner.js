@@ -10,17 +10,16 @@ const SKIP_TOKENS = [
 let _lastScanResults = [];
 export function getLastCandidates() { return _lastScanResults; }
 
-// Returns Daily Fee/TVL in percent (e.g. 8 = 8% daily). Prefer pool.fees["24h"]
-// if present; otherwise compute from 24h volume × binStep fee rate / TVL.
+// Returns Daily Fee/TVL in percent (e.g. 8 = 8% daily) strictly from
+// pool.fees["24h"]. Returns 0 when fees24h is missing — callers must handle
+// that case explicitly (previous vol×binStep fallback over-inflated APR for
+// high-binStep pools like BULL).
 export function getEffectiveApr(pool) {
   const tvl = pool?.tvl ?? 0;
   if (tvl <= 0) return 0;
   const fees24h = pool?.fees?.["24h"] ?? 0;
   if (fees24h > 0) return (fees24h / tvl) * 100;
-  const vol24h = pool?.volume?.["24h"] ?? 0;
-  const binStep = pool?.pool_config?.bin_step ?? 100;
-  if (vol24h <= 0) return 0;
-  return (vol24h * binStep * 0.01 / tvl) * 100;
+  return 0;
 }
 
 function calculateOrganicScore(pool, dexPair) {

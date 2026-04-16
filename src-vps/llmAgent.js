@@ -168,7 +168,7 @@ function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContex
   return `=== AVAILABLE POOLS (${pools.length}) ===
 ${poolList || "None"}
 
-=== OPEN POSITIONS (${openPositions.length}/3) ===
+=== OPEN POSITIONS (${openPositions.length}/${config.maxOpenPositions ?? 6}) ===
 ${openPositions.map(p => `- ${p.pool?.slice(0,8)}... | ${p.strategy} | ${p.solDeployed} SOL`).join("\n") || "None"}
 
 === TRADE MEMORY ===
