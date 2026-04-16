@@ -153,8 +153,20 @@ function registerCommands() {
     const mh = process.env.MAX_HOLD_HOURS ?? "3";
     const minFeeApr = c.minFeeAprFilter ?? (Number(process.env.MIN_FEE_APR_FILTER) || 7);
     const minFeeAprHold = parseFloat(process.env.MIN_FEE_APR_TO_HOLD) || 10;
+
+    const pad = (n) => String(n).padStart(2, "0");
+    const sh = pad(process.env.ACTIVE_HOURS_START ?? 13);
+    const sm = pad(process.env.ACTIVE_HOURS_START_MIN ?? 30);
+    const eh = pad(process.env.ACTIVE_HOURS_END ?? 20);
+    const em = pad(process.env.ACTIVE_HOURS_END_MIN ?? 30);
+    const strictWindow = `${sh}:${sm} - ${eh}:${em} WIB`;
+
+    const oorRightStrict = Number(process.env.OOR_RIGHT_STRICT_MIN) || 15;
+    const oorLeftStrict = Number(process.env.OOR_LEFT_STRICT_MIN) || 10;
+
     const msg =
       `<b>⚙️ Current Thresholds</b>\n${"─".repeat(25)}\n\n` +
+      `Strict Hours: <b>${strictWindow}</b>\n` +
       `Min Volume 24h: <b>$${(c.minPoolVolumeUsd / 1000).toFixed(0)}k</b>\n` +
       `Min Daily Fee/TVL: <b>${minFeeApr}%</b>\n` +
       `Max TVL: <b>$${(c.maxTvlUsd / 1000).toFixed(0)}k</b>\n` +
@@ -166,7 +178,8 @@ function registerCommands() {
       `Stop Loss: <b>${sl}%</b>\n` +
       `Max Hold Time: <b>${mh}h</b>\n` +
       `Min Fee APR to Hold: <b>${minFeeAprHold}%</b>\n` +
-      `OOR Wait: <b>${c.outOfRangeWaitMinutes} min</b>\n` +
+      `OOR kanan (strict): <b>${oorRightStrict}m</b>\n` +
+      `OOR kiri (strict): <b>${oorLeftStrict}m</b>\n` +
       `Fee TP: <b>${(c.takeProfitFeePct * 100).toFixed(0)}% of deployed</b>`;
     await ctx.replyWithHTML(msg, mainMenu());
   });

@@ -925,6 +925,17 @@ export async function rebalancePosition(positionId) {
   };
   savePendingReopens(pending);
   console.log(`  [Rebalance] OOR-right: re-open queued (5min, restart-safe)`);
+
+  // Auto-swap token sisa ke SOL. OOR-right close returns all-token (pump exit),
+  // tokens would otherwise sit idle in wallet until re-open fires.
+  try {
+    console.log(`[AutoSwap] Triggered after REBALANCE close`);
+    await new Promise(r => setTimeout(r, 20000));
+    const { autoSwapTokensToSOL } = await import("./autoSwap.js");
+    const { notifyMessage } = await import("./telegramBot.js");
+    await autoSwapTokensToSOL(notifyMessage);
+  } catch (e) { console.warn(`  [Rebalance] autoSwap failed: ${e.message}`); }
+
   return true; // signal to caller: rebalance scheduled, skip plain close
 }
 

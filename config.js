@@ -24,7 +24,7 @@ export const config = {
   maxSolPerPosition: Number(process.env.MAX_SOL_PER_POSITION) || 3,
   minPoolVolumeUsd: Number(process.env.MIN_POOL_VOLUME_USD) || 50_000,
   minPoolFeeApr: Number(process.env.MIN_POOL_FEE_APR) || 20,
-  minFeeAprFilter: Number(process.env.MIN_FEE_APR_FILTER) || 7,
+  minFeeAprFilter: Number(process.env.MIN_FEE_APR_FILTER) || 10,
   maxOpenPositions: Number(process.env.MAX_OPEN_POSITIONS) || 5,
   maxDeployPer24h: Number(process.env.MAX_DEPLOY_PER_24H) || 5,
   tokenCooldownHours: Number(process.env.TOKEN_COOLDOWN_HOURS) || 0.5,

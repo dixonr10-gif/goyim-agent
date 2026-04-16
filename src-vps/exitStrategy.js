@@ -187,11 +187,15 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
             const strict = isStrictHours();
             if (oorDir === "right") {
               // Token pumped past range → position is all-token, value up, no IL
-              oorWaitMinutes = strict ? 15 : 35;
+              const rStrict = Number(process.env.OOR_RIGHT_STRICT_MIN) || 15;
+              const rNormal = Number(process.env.OOR_RIGHT_NORMAL_MIN) || 35;
+              oorWaitMinutes = strict ? rStrict : rNormal;
               console.log(`  [OOR] kanan — token pump (active=${binStatus.activeBinId} > upper=${binStatus.upperBin}), wait ${oorWaitMinutes}m${strict ? " (strict)" : ""}`);
             } else if (oorDir === "left") {
               // Token dumped below range → position is all-SOL, IL realized
-              oorWaitMinutes = strict ? 10 : 15;
+              const lStrict = Number(process.env.OOR_LEFT_STRICT_MIN) || 10;
+              const lNormal = Number(process.env.OOR_LEFT_NORMAL_MIN) || 15;
+              oorWaitMinutes = strict ? lStrict : lNormal;
               console.log(`  [OOR] kiri — token dump (active=${binStatus.activeBinId} < lower=${binStatus.lowerBin}), close in ${oorWaitMinutes}m${strict ? " (strict)" : ""}`);
             }
             updatePositionField(position.id, 'oorDirection', oorDir);
@@ -382,67 +386,6 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
           }
         }
       } catch (e) { console.warn(`  ⚠️ TrailingTP error:`, e.message); }
-
-      // ── Hybrid TP: LLM-assisted exit when PnL >= +4% ─────────────────────
-      // Calls LLM_MODEL_FAST with momentum data to decide HOLD/CLOSE.
-      // Anti-spam: skip if checked within last 2 minutes.
-      // Trailing TP remains as safety net regardless.
-      if (pnlPercent >= 4 && !position.trailingActive?.toString().includes("CLOSE")) {
-        const lastCheck = position._lastHybridTPCheck ?? 0;
-        if (Date.now() - lastCheck >= 2 * 60 * 1000) {
-          try {
-            const { updatePositionField: ufHybrid } = await import("./positionManager.js");
-            ufHybrid(position.id, "_lastHybridTPCheck", Date.now());
-
-            // Fetch momentum from DexScreener
-            let p5m = "N/A", p1h = "N/A";
-            try {
-              const dxRes = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${position.pool}`, { signal: AbortSignal.timeout(5000) });
-              const dxData = await dxRes.json();
-              const pair = dxData?.pair ?? dxData?.pairs?.[0];
-              if (pair?.priceChange) {
-                p5m = pair.priceChange.m5 ?? "N/A";
-                p1h = pair.priceChange.h1 ?? "N/A";
-              }
-            } catch {}
-
-            const hwm = position.highWaterMark ?? pnlPercent;
-            const fees = position._posValueUsd ? (position._posValueUsd * 0.01).toFixed(2) : "N/A";
-            const poolName = position.poolName ?? position.id;
-
-            const llmModel = process.env.LLM_MODEL_FAST || "anthropic/claude-haiku-4.5";
-            const apiKey = process.env.OPENROUTER_API_KEY;
-            if (apiKey) {
-              const llmRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-                signal: AbortSignal.timeout(5000),
-                body: JSON.stringify({
-                  model: llmModel,
-                  max_tokens: 60,
-                  messages: [
-                    { role: "system", content: 'You are a take-profit decision engine for a Solana DLMM liquidity provision bot. Respond ONLY with valid JSON. No explanation. No markdown. No extra text. Format: {"action": "HOLD" or "CLOSE", "reason": "max 10 words"}' },
-                    { role: "user", content: `Position: ${poolName}\nCurrent PnL: +${pnlPercent.toFixed(2)}%\nHold time: ${holdHours.toFixed(1)}h\nHWM (peak PnL): +${hwm.toFixed(2)}%\nPrice 5m: ${p5m}%\nPrice 1h: ${p1h}%\nClaimable fees: $${fees}\n\nRules:\n- CLOSE if momentum clearly weakening (5m red + 1h red)\n- CLOSE if price already retraced >50% from recent pump\n- HOLD if momentum still strong (5m green or flat)\n- HOLD if fees still accumulating fast (>$5 claimable)\n- When uncertain → HOLD (trailing TP will handle it)` },
-                  ],
-                }),
-              });
-              const llmData = await llmRes.json();
-              const raw = llmData?.choices?.[0]?.message?.content ?? "";
-              const json = JSON.parse(raw.replace(/```json?\s*/g, "").replace(/```/g, "").trim());
-
-              if (json.action === "CLOSE") {
-                console.log(`  🧠 [HybridTP] ${poolName} +${pnlPercent.toFixed(1)}% → CLOSE — ${json.reason}`);
-                toClose.push({ positionId: position.id, code: "HYBRID_TP", reason: `hybrid TP: +${pnlPercent.toFixed(1)}% — ${json.reason}`, pnlPercent, currentValue });
-                continue;
-              } else {
-                console.log(`  🧠 [HybridTP] ${poolName} +${pnlPercent.toFixed(1)}% → HOLD — ${json.reason}`);
-              }
-            }
-          } catch (e) {
-            console.log(`  🧠 [HybridTP] ${position.poolName ?? position.id} LLM error → fallback trailing TP (${e.message})`);
-          }
-        }
-      }
 
       // ── Max hold time ─────────────────────────────────────────────────────
       if (holdHours >= effectiveMaxHold) {

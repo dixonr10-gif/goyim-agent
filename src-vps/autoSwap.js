@@ -33,7 +33,7 @@ function addPendingSwap(tokenMint, amount, usdValue) {
   const pending = loadPendingSwaps();
   // Don't duplicate
   if (pending.some(s => s.tokenMint === tokenMint)) return;
-  pending.push({ tokenMint, amount, usdValue, failedAt: new Date().toISOString(), retries: 0 });
+  pending.push({ tokenMint, amount, usdValue, failedAt: new Date().toISOString(), retries: 0, nextRetryAt: 0, alertSent: false });
   savePendingSwaps(pending);
 }
 function removePendingSwap(tokenMint) {
@@ -333,13 +333,23 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
 export async function retryPendingSwaps(notifyFn = null) {
   const pending = loadPendingSwaps();
   if (pending.length === 0) return;
-  console.log(`[PendingSwap] ${pending.length} pending swap(s) to retry`);
 
-  // Track mints that exceeded the retry budget this cycle so the trailing
-  // patch step below doesn't accidentally resurrect them.
+  const now = Date.now();
+  const due = [];
+  for (const swap of pending) {
+    if (swap.nextRetryAt && now < swap.nextRetryAt) {
+      const until = new Date(swap.nextRetryAt).toISOString();
+      console.log(`[AutoSwap] Skip ${swap.tokenMint.slice(0, 8)}, cooldown until ${until}`);
+      continue;
+    }
+    due.push(swap);
+  }
+  if (due.length === 0) return;
+  console.log(`[PendingSwap] ${due.length} pending swap(s) to retry`);
+
   const dropped = new Set();
 
-  for (const swap of pending) {
+  for (const swap of due) {
     swap.retries = (swap.retries ?? 0) + 1;
     if (swap.retries > 5) {
       console.log(`[PendingSwap] ${swap.tokenMint.slice(0, 8)} exceeded 5 retries — removing`);
@@ -347,26 +357,39 @@ export async function retryPendingSwaps(notifyFn = null) {
       dropped.add(swap.tokenMint);
       continue;
     }
+
+    if (swap.retries >= 3 && !swap.alertSent) {
+      swap.nextRetryAt = now + FAIL_COOLDOWN_MS;
+      swap.alertSent = true;
+      const sym = swap.symbol ?? swap.tokenMint.slice(0, 8);
+      const until = new Date(swap.nextRetryAt).toISOString();
+      console.log(`[AutoSwap] ${sym} failed 3x, cooldown 24h until ${until}`);
+      if (notifyFn) {
+        try {
+          await notifyFn(`⚠️ Auto-swap ${sym} gagal 3x — akan dicoba lagi besok. Swap manual jika urgent.`);
+        } catch {}
+      }
+      continue;
+    }
+
     try {
       console.log(`[PendingSwap] Retrying ${swap.tokenMint.slice(0, 8)}... (attempt ${swap.retries})`);
-      // Trigger a full autoSwap which will pick up this token if balance > 0
       await autoSwapTokensToSOL(notifyFn);
-      break; // autoSwap processes all tokens, so one call is enough
+      break;
     } catch (err) {
       console.log(`[PendingSwap] Retry failed: ${err.message?.slice(0, 80)}`);
     }
   }
 
-  // Persist incremented retry counters WITHOUT clobbering: re-read the file
-  // fresh (so we capture the mid-loop removePendingSwap call AND any add/remove
-  // done inside autoSwapTokensToSOL), then patch in the new retries count only
-  // for entries that still exist. Without this, the previous trailing
-  // savePendingSwaps(pending) would resurrect entries we just removed.
   const fresh = loadPendingSwaps();
   for (const swap of pending) {
     if (dropped.has(swap.tokenMint)) continue;
     const idx = fresh.findIndex(s => s.tokenMint === swap.tokenMint);
-    if (idx >= 0) fresh[idx].retries = swap.retries;
+    if (idx >= 0) {
+      fresh[idx].retries = swap.retries;
+      if (swap.nextRetryAt !== undefined) fresh[idx].nextRetryAt = swap.nextRetryAt;
+      if (swap.alertSent !== undefined) fresh[idx].alertSent = swap.alertSent;
+    }
   }
   savePendingSwaps(fresh);
 }

@@ -55,6 +55,7 @@ export async function runHealer() {
         } catch {}
       }
       console.log(`  [ManualClose] triggering autoSwap for token sisa`);
+      console.log(`[AutoSwap] Triggered after MANUAL close`);
       await new Promise(r => setTimeout(r, 10000));
       await autoSwapTokensToSOL(notifyMessage);
     }
@@ -134,6 +135,7 @@ export async function runHealer() {
 
         // Wait for close TX to finalize on-chain before checking token balances
         console.log(`🔄 Waiting 20s for tokens to settle, then auto-swapping...`);
+        console.log(`[AutoSwap] Triggered after ${closeReason} close`);
         await new Promise(r => setTimeout(r, 20000));
         await autoSwapTokensToSOL(notifyMessage);
 

@@ -88,6 +88,49 @@ async function fetchMultiTimeframePriceChange(poolAddress) {
   } catch { return null; }
 }
 
+// Pre-LLM score: mirrors the post-LLM weighted scoring (see line ~748) so we
+// can drop weak candidates before paying for an LLM call. Uses cached pool._mtf
+// and poolAnalyses (no extra network fetches). Returns -1 to signal a hard SKIP
+// from poolMem (losing-streak / blacklist-tier reason).
+function computePreLLMScore(pool, rawPool, poolAnalysis) {
+  let feeScore = 30;
+  try {
+    const dailyFees = pool.fees24h ?? pool.fees?.["24h"] ?? (pool.volume24h * (pool.feePct ?? 0.25) / 100) ?? 0;
+    const tvl = pool.tvl ?? 1;
+    const feeRatio = (dailyFees / tvl) * 100;
+    if (feeRatio >= 10) feeScore = 100;
+    else if (feeRatio >= 5) feeScore = 85;
+    else if (feeRatio >= 2) feeScore = 70;
+    else if (feeRatio >= 1) feeScore = 50;
+  } catch {}
+
+  const organic = rawPool?.organicScore ?? pool.organicScore ?? 50;
+  const volScore = Math.min(100, organic + (rawPool?.uptrend ? 20 : 0));
+
+  let momentumScore = 50;
+  const mtf = pool._mtf ?? null;
+  if (mtf) {
+    if (mtf.h6 != null && mtf.h6 > 170) momentumScore = 0;
+    if (momentumScore > 0 && mtf.m5 != null && mtf.h1 != null) {
+      if (mtf.m5 > 0 && mtf.h1 > 0) momentumScore = 80;
+      else if (mtf.m5 < 0 && mtf.h1 > 0) momentumScore = 60;
+      else if (mtf.m5 > 0 && mtf.h1 < 0) momentumScore = 40;
+      else momentumScore = 20;
+    }
+  }
+
+  const otherScore = Math.min(100, poolAnalysis?.opportunityScore ?? 50);
+  const rawScore = Math.round(feeScore * 0.20 + volScore * 0.35 + momentumScore * 0.20 + otherScore * 0.25);
+
+  const poolMem = getPoolScoreAdjustment(pool.address);
+  if (poolMem.adjustment === -999) return { finalScore: -1, reason: `poolMem SKIP: ${poolMem.reason}` };
+  let poolMemAdj = 0;
+  if (poolMem.adjustment !== 0) poolMemAdj = Math.max(poolMem.adjustment, -20);
+  const combinedAdj = Math.max(poolMemAdj, -40);
+  const finalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
+  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj };
+}
+
 async function fetchDexScreenerTrending() {
   const trendingPools = [];
   const seenTokens = new Set();
@@ -495,6 +538,64 @@ export async function runHunter() {
       console.log(`  ${a.poolName}: score=${a.opportunityScore} | vol=${a.volatility.level} | trend=${a.trend.direction}`)
     );
 
+    // OHLCV chart runs BEFORE pre-LLM gates so chart.pattern is available for
+    // the PoolMem-capped + downtrend hard block.
+    console.log("\n🕯️ Analyzing OHLCV charts...");
+    const chartMap = new Map();
+    await Promise.all(preFilteredPools.map(async (pool) => {
+      try {
+        const chart = await analyzeChart(pool.address, pool.dexPair ?? null);
+        if (chart) {
+          chartMap.set(pool.address, chart);
+          pool.chart = chart;
+          console.log(`  🕯️ ${pool.name}: ${chart.pattern} | price=${chart.priceTrend} | vol=${chart.volumeTrend}`);
+        }
+      } catch (err) {
+        console.log(`  ⚠️ Chart error for ${pool.name}: ${err.message}`);
+      }
+    }));
+
+    for (const pool of preFilteredPools) {
+      pool.poolMem = getPoolScoreAdjustment(pool.address);
+    }
+
+    console.log("\n⛔ Pre-LLM hard block (PoolMem capped + downtrend)...");
+    for (let i = preFilteredPools.length - 1; i >= 0; i--) {
+      const pool = preFilteredPools[i];
+      const chartPattern = pool.chart?.pattern ?? null;
+      const isPoolMemCapped = (pool.poolMem?.adjustment ?? 0) <= -20;
+      const isDowntrend = chartPattern === 'DUMPING' || chartPattern === 'PUMP_EXHAUSTION';
+      if (isPoolMemCapped && isDowntrend) {
+        console.log(`[Hunter] ⛔ HARD BLOCK ${pool.name}: PoolMem capped + ${chartPattern}`);
+        preFilteredPools.splice(i, 1);
+        continue;
+      }
+    }
+    if (preFilteredPools.length === 0) { console.log("⚠️ All pools hard-blocked."); return; }
+
+    console.log("\n🎯 Pre-LLM score filter...");
+    for (let i = preFilteredPools.length - 1; i >= 0; i--) {
+      const pool = preFilteredPools[i];
+      const rawPool = nonBlacklisted.find(p => p.address === pool.address);
+      const poolAnalysis = poolAnalyses.find(a => a.poolAddress === pool.address || a.poolName === pool.name);
+      const result = computePreLLMScore(pool, rawPool, poolAnalysis);
+      if (result.finalScore === -1) {
+        console.log(`  [Hunter] ⛔ ${pool.name} ${result.reason} — skip`);
+        preFilteredPools.splice(i, 1);
+        continue;
+      }
+      const finalScore = result.finalScore;
+      const isPoolMemCapped = (pool.poolMem?.adjustment ?? 0) <= -20;
+      if (isPoolMemCapped && finalScore < 55) {
+        console.log(`[Hunter] ⛔ SCORE BLOCK ${pool.name}: PoolMem capped, score ${finalScore} < 55`);
+        preFilteredPools.splice(i, 1);
+        continue;
+      }
+      pool._preLLMScore = finalScore;
+    }
+    if (preFilteredPools.length === 0) { console.log("⚠️ All pools failed pre-LLM score filter."); return; }
+    console.log(`  [Hunter] ${preFilteredPools.length} pool(s) passed pre-LLM score filter`);
+
     const formattedPools = formatPoolsForLLM(preFilteredPools);
 
     // TA enrichment (RSI + EMA20) for top candidates
@@ -516,29 +617,8 @@ export async function runHunter() {
       }
     }));
 
-    // Attach TA data to formatted pools for LLM prompt
     for (const fp of formattedPools) {
       fp.ta = taMap.get(fp.address) ?? null;
-    }
-
-    // OHLCV Chart analysis for top 10 candidates (by score)
-    console.log("\n🕯️ Analyzing OHLCV charts (top 10)...");
-    const chartCandidates = preFilteredPools.slice(0, 10);
-    const chartMap = new Map();
-    await Promise.all(chartCandidates.map(async (pool) => {
-      try {
-        const chart = await analyzeChart(pool.address, pool.dexPair ?? null);
-        if (chart) {
-          chartMap.set(pool.address, chart);
-          console.log(`  🕯️ ${pool.name}: ${chart.pattern} | price=${chart.priceTrend} | vol=${chart.volumeTrend}`);
-        }
-      } catch (err) {
-        console.log(`  ⚠️ Chart error for ${pool.name}: ${err.message}`);
-      }
-    }));
-
-    // Attach chart analysis to formatted pools for LLM prompt
-    for (const fp of formattedPools) {
       fp.chart = chartMap.get(fp.address) ?? null;
     }
 
@@ -645,7 +725,7 @@ export async function runHunter() {
               effective1h = priceChange5m * 12;
               proxyFrom5m = true;
             }
-            if (effective1h != null && effective1h >= 2 && effective1h <= 20) {
+            if (effective1h != null && effective1h >= 2 && effective1h <= 40) {
               decision.strategy = "bidask";
               const tag = proxyFrom5m ? " (proxy from 5m)" : "";
               console.log(`  [Strategy] BidAsk — 1h +${effective1h.toFixed(1)}%${tag}`);
