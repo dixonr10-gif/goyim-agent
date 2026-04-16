@@ -98,8 +98,21 @@ export function setCooldown(tokenSymbol, opts = {}) {
   const key = tokenSymbol.toUpperCase();
   const data = load();
   const now = Date.now();
-
   const existing = pruneDeploys(data[key]) ?? {};
+
+  // REBALANCE is a relocation event, not a finalized trade outcome.
+  // Skip wins-streak update and deploys24h increment — only set a short
+  // re-entry cooldown so the agent doesn't immediately re-pick the same pool.
+  if ((reason || "").toUpperCase() === "REBALANCE") {
+    existing.setAt = new Date(now).toISOString();
+    existing.expiresAt = new Date(now + 30 * 60 * 1000).toISOString();
+    existing.reason = "REBALANCE";
+    data[key] = existing;
+    save(data);
+    console.log(`[Cooldown] ${key}: REBALANCE → 30min cooldown (no wins/deploys update)`);
+    return;
+  }
+
   const deploys = Array.isArray(existing.deploys24h) ? [...existing.deploys24h] : [];
   deploys.push(new Date(now).toISOString());
 

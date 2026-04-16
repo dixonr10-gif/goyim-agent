@@ -371,13 +371,6 @@ export async function openPosition(decision) {
     if (openPositions.size > 0) savePositions(openPositions);
     console.log(`✅ Real position opened: ${positionId}`);
 
-    // Set cooldown so agent won't re-enter same token for COOLDOWN_HOURS
-    try {
-      const { extractTokenSymbol, setCooldown } = await import("./cooldownManager.js");
-      const symbol = extractTokenSymbol(poolName);
-      if (symbol) setCooldown(symbol);
-    } catch {}
-
     return positionId;
 
   } catch (err) {

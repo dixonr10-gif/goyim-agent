@@ -979,8 +979,7 @@ export async function runHunter() {
                 lowBalanceCooldownUntil = Date.now() + 10 * 60_000;
               } else {
                 console.log(`  [Hunter] open error: ${msg.slice(0, 100)}`);
-                const sym = extractTokenSymbol(pool.name);
-                if (sym) { setCooldown(sym); console.log(`  ⏱️ Cooldown set for ${sym} after TX failure`); }
+                console.log(`  [Hunter] TX failed, skip setCooldown — deploys24h counter preserved`);
                 await notifyError(`[Hunter] ${msg.slice(0, 100)}`);
               }
             }

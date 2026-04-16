@@ -1354,7 +1354,15 @@ function confirmCloseAllMenu() {
 }
 
 function positionsMenu(positions) {
-  const btns = positions.map(pos => [Markup.button.callback(`🔴 Close ${pos.pool?.slice(0,6)}...`, `close_${pos.id}`)]);
+  const tickerOf = (pos) => {
+    const name = pos.poolName ?? pos.tokenSymbol ?? pos.pool ?? "";
+    const ticker = name.split(/[-\/\s]/)[0]?.toUpperCase();
+    return ticker || pos.pool?.slice(0, 6) || pos.id;
+  };
+  const btns = positions.map(pos => [Markup.button.callback(`🔴 Close ${tickerOf(pos)}`, `close_${pos.id}`)]);
+  if (positions.length > 1) {
+    btns.push([Markup.button.callback("🔴 Close All Positions", "closeall_confirm_prompt")]);
+  }
   return Markup.inlineKeyboard([...btns, [Markup.button.callback("↩️ Back", "status")]]);
 }
 
