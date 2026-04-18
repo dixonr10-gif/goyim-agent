@@ -951,6 +951,15 @@ export async function processPendingReopens() {
       continue;
     }
 
+    // Skip re-open during strict hours — keep entry in queue for next cycle
+    try {
+      const { isStrictHours } = await import("./timeHelper.js");
+      if (isStrictHours()) {
+        console.log(`  [PendingReopen] Skip ${entry.poolName ?? entry.pool?.slice(0,8)}: strict hours — retry later`);
+        continue;
+      }
+    } catch {}
+
     // Wait elapsed — remove entry FIRST so a concurrent healer tick can't
     // double-trigger, then attempt the re-open. On failure we DO NOT re-add
     // the entry (would loop forever); we notify and let the user intervene.

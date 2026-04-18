@@ -79,16 +79,7 @@ function registerCommands() {
   });
 
   bot.command("pnl", async (ctx) => {
-    try {
-      const period = ctx.message.text.split(/\s+/)[1]?.toLowerCase() ?? "weekly";
-      const valid = ["daily", "weekly", "monthly"];
-      const p = valid.includes(period) ? period : "weekly";
-      await ctx.reply(`📊 Generating ${p} PnL card...`);
-      const { sendPnlCard } = await import("./pnlCard.js");
-      await sendPnlCard(bot, ctx.chat.id, p);
-    } catch (err) {
-      await ctx.replyWithHTML(buildPnLMessage(), mainMenu());
-    }
+    await ctx.replyWithHTML(buildPnLMessage(), mainMenu());
   });
   bot.command("winrate", async (ctx) => { await ctx.replyWithHTML(buildWinRateMessage(), mainMenu()); });
   bot.command("history", async (ctx) => { await ctx.replyWithHTML(buildHistoryMessage(), mainMenu()); });
@@ -656,13 +647,8 @@ function registerCallbacks() {
     } catch (err) { await ctx.editMessageText(`❌ ${err.message}`, { ...mainMenu() }); }
   });
   bot.action("pnl", async (ctx) => {
-    await ctx.answerCbQuery("📊 Generating...");
-    try {
-      const { sendPnlCard } = await import("./pnlCard.js");
-      await sendPnlCard(bot, ctx.chat.id, "weekly");
-    } catch {
-      await ctx.editMessageText(buildPnLMessage(), { parse_mode: "HTML", ...mainMenu() });
-    }
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(buildPnLMessage(), { parse_mode: "HTML", ...mainMenu() });
   });
   bot.action("winrate", async (ctx) => {
     await ctx.answerCbQuery();
@@ -830,29 +816,6 @@ function registerCallbacks() {
     await ctx.answerCbQuery("📋 Fetching...");
     const keyword = cat === "all" ? null : cat;
     await sendLogs(ctx, keyword);
-  });
-
-  bot.action("btn_pnlcard", async (ctx) => {
-    await ctx.answerCbQuery();
-    await ctx.editMessageText("📊 Pilih periode PnL Card:", {
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback("📅 Daily", "pnlcard_daily"),
-          Markup.button.callback("📆 Weekly", "pnlcard_weekly"),
-          Markup.button.callback("🗓 Monthly", "pnlcard_monthly"),
-        ],
-        [Markup.button.callback("⬅️ Back", "pnlcard_back")],
-      ]),
-    });
-  });
-  bot.action(/^pnlcard_(.+)$/, async (ctx) => {
-    const period = ctx.match[1];
-    if (period === "back") { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); return; }
-    await ctx.answerCbQuery("📊 Generating...");
-    try {
-      const { sendPnlCard } = await import("./pnlCard.js");
-      await sendPnlCard(bot, ctx.chat.id, period);
-    } catch (err) { await ctx.reply("❌ Gagal generate card: " + (err.message?.slice(0, 80) ?? "unknown")); }
   });
 
   // ── PM2 Control callbacks ─────────────────────────────────────────
@@ -1336,7 +1299,6 @@ function mainMenu() {
     [Markup.button.callback("🔄 Refresh", "refresh")],
     [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("👀 Watchlist", "btn_watchlist")],
     [Markup.button.callback("⏳ Cooldown", "btn_cooldown"), Markup.button.callback("📋 Logs", "btn_logs")],
-    [Markup.button.callback("📊 PnL Card", "btn_pnlcard")],
     [Markup.button.callback("🔄 Restart", "pm2_restart"), Markup.button.callback("⚙️ PM2 Status", "pm2_status")],
     [
       agentPaused ? Markup.button.callback("▶️ Resume", "resume") : Markup.button.callback("⏸️ Pause", "pause"),

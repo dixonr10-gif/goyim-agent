@@ -28,6 +28,25 @@ let lowBalanceCooldownUntil = 0;
 let strictLossCooldownUntil = 0;
 let strictCooldownNotified = false;
 
+// In-memory pool cooldown for TX simulation failures (InvalidRealloc et al).
+// Sim failures usually indicate pool-specific bin/liquidity/program state issues
+// that won't resolve in the next few minutes — skip the pool for 30min so the
+// hunter stops burning LLM calls and Telegram alerts on a known-broken pool.
+const SIM_FAIL_COOLDOWN_MS = 30 * 60_000;
+const simFailCooldowns = new Map();
+function isSimFailCooldown(poolAddress) {
+  const until = simFailCooldowns.get(poolAddress);
+  if (!until) return false;
+  if (Date.now() >= until) { simFailCooldowns.delete(poolAddress); return false; }
+  return true;
+}
+function markSimFailCooldown(poolAddress) {
+  simFailCooldowns.set(poolAddress, Date.now() + SIM_FAIL_COOLDOWN_MS);
+}
+function isSimFailError(msg) {
+  return /simulation failed|InvalidRealloc|Failed to reallocate|getSimulationComputeUnits/i.test(msg ?? "");
+}
+
 const STRICT_COOLDOWN_FILE = path.resolve("data/strict_cooldown.json");
 
 // Restore strict cooldown across PM2 restart
@@ -425,17 +444,18 @@ export async function runHunter() {
     const MIN_FEE_APR = config.minFeeAprFilter ?? 7;
     const feeFiltered = nonBlacklisted.filter(pool => {
       const sym = (pool.name ?? "").split(/[-\/]/)[0];
-      const rawFees24h = pool?.fees?.["24h"] ?? 0;
-      if (!rawFees24h || rawFees24h <= 0) {
-        console.log(`  [Hunter] ⛔️ NO_FEE_DATA ${pool.name}: fees24h unavailable — skip`);
-        return false;
-      }
       const feeApr = getEffectiveApr(pool);
-      if (feeApr < MIN_FEE_APR) {
-        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL ${feeApr.toFixed(2)}% [fees24h] < ${MIN_FEE_APR}%`);
+      if (feeApr <= 0) {
+        console.log(`  [Hunter] ⛔️ NO_FEE_DATA ${pool.name}: no fees24h or volume — skip`);
         return false;
       }
-      console.log(`  [PreFilter] ${sym} OK — Daily Fee/TVL ${feeApr.toFixed(2)}% [fees24h]`);
+      const rawFees24h = pool?.fees?.["24h"] ?? 0;
+      const src = rawFees24h > 0 ? "fees24h" : "vol×binStep";
+      if (feeApr < MIN_FEE_APR) {
+        console.log(`  [PreFilter] ${sym} SKIP — Daily Fee/TVL ${feeApr.toFixed(2)}% [${src}] < ${MIN_FEE_APR}%`);
+        return false;
+      }
+      console.log(`  [PreFilter] ${sym} OK — Daily Fee/TVL ${feeApr.toFixed(2)}% [${src}]`);
       return true;
     });
     if (feeFiltered.length === 0) { console.log("⚠️ All pools below fee APR floor."); return; }
@@ -460,6 +480,21 @@ export async function runHunter() {
     const filteredOutOpen = feeFiltered.length - availablePools.length;
     if (filteredOutOpen > 0) console.log(`  [Hunter] Filtered out ${filteredOutOpen} pool(s) — open positions/tokens`);
     if (availablePools.length === 0) { console.log("⚠️ All pools already have open positions."); return; }
+
+    // Drop pools that recently failed TX simulation (InvalidRealloc etc).
+    const preSimFilterCount = availablePools.length;
+    for (let i = availablePools.length - 1; i >= 0; i--) {
+      const p = availablePools[i];
+      if (isSimFailCooldown(p.address)) {
+        const remaining = Math.round((simFailCooldowns.get(p.address) - Date.now()) / 60_000);
+        console.log(`  [Hunter] Skip ${p.name}: sim-fail cooldown ${remaining}m remaining`);
+        availablePools.splice(i, 1);
+      }
+    }
+    if (availablePools.length < preSimFilterCount) {
+      console.log(`  [Hunter] Filtered out ${preSimFilterCount - availablePools.length} pool(s) — sim-fail cooldown`);
+    }
+    if (availablePools.length === 0) { console.log("⚠️ All pools on sim-fail cooldown."); return; }
 
     // ── Pre-LLM hard filters: pump exhaustion, crash, ATH ────────────────
     // These MUST run before LLM sees the pool list — LLM cannot override.
@@ -977,6 +1012,9 @@ export async function runHunter() {
               } else if (msg.includes("SOL tidak cukup")) {
                 console.log(`  💸 ${msg}`);
                 lowBalanceCooldownUntil = Date.now() + 10 * 60_000;
+              } else if (isSimFailError(msg)) {
+                markSimFailCooldown(pool.address);
+                console.log(`  [Hunter] sim-fail ${pool.name}: ${msg.slice(0, 100)} — 30min cooldown, no Telegram alert`);
               } else {
                 console.log(`  [Hunter] open error: ${msg.slice(0, 100)}`);
                 console.log(`  [Hunter] TX failed, skip setCooldown — deploys24h counter preserved`);

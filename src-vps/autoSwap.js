@@ -21,7 +21,8 @@ const AUTO_SWAP_ENABLED = process.env.AUTO_SWAP_ENABLED !== "false";
 const AUTO_SWAP_MIN_USD = Number(process.env.AUTO_SWAP_MIN_USD) || 1;
 const PENDING_SWAPS_FILE = path.resolve("data/pending_swaps.json");
 const FAILED_SWAPS_FILE  = path.resolve("data/failed_swaps.json");
-const FAIL_COOLDOWN_MS   = 24 * 60 * 60 * 1000; // 24h skip window
+const FAIL_COOLDOWN_MS        = 24 * 60 * 60 * 1000; // slippage 3x fail → 24h
+const NO_ROUTES_COOLDOWN_MS   =  2 * 60 * 60 * 1000; // route depth gap → 2h (liquidity can recover fast)
 
 function loadPendingSwaps() {
   try { return JSON.parse(fs.readFileSync(PENDING_SWAPS_FILE, "utf-8")); } catch { return []; }
@@ -49,16 +50,24 @@ function loadFailedSwaps() {
 function saveFailedSwaps(swaps) {
   try { fs.mkdirSync(path.dirname(FAILED_SWAPS_FILE), { recursive: true }); fs.writeFileSync(FAILED_SWAPS_FILE, JSON.stringify(swaps, null, 2)); } catch {}
 }
-function addFailedSwap({ symbol, tokenMint, amount, reason }) {
+function addFailedSwap({ symbol, tokenMint, amount, reason, cooldownMs }) {
   const list = loadFailedSwaps().filter(s => s.tokenMint !== tokenMint);
-  list.push({ symbol: symbol ?? null, tokenMint, amount, failedAt: new Date().toISOString(), reason: reason ?? null });
+  list.push({
+    symbol: symbol ?? null,
+    tokenMint,
+    amount,
+    failedAt: new Date().toISOString(),
+    reason: reason ?? null,
+    cooldownMs: cooldownMs ?? FAIL_COOLDOWN_MS,
+  });
   saveFailedSwaps(list);
 }
 function isFailedRecently(tokenMint) {
   const list = loadFailedSwaps();
   const match = list.find(s => s.tokenMint === tokenMint);
   if (!match?.failedAt) return false;
-  return (Date.now() - new Date(match.failedAt).getTime()) < FAIL_COOLDOWN_MS;
+  const window = match.cooldownMs ?? FAIL_COOLDOWN_MS;
+  return (Date.now() - new Date(match.failedAt).getTime()) < window;
 }
 
 async function fetchDexScreenerPrice(mint) {
@@ -254,29 +263,64 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
       // slippage; 4th tier (1000 bps) historically never rescues one.
       const SLIPPAGE_TIERS = [100, 300, 500];
 
-      // Check for route existence first with a single quote
-      let hasRoute = true;
-      try {
-        await getJupiterQuote(token.mint, token.amount, 100);
-      } catch (err) {
-        if (err.message?.includes("NO_ROUTES_FOUND") || err.message?.includes("No routes found")) {
-          hasRoute = false;
-          console.log(`[AutoSwap] ${mintShort} no route → manual swap needed`);
-          await notifyTemp(`⚠️ Auto-swap gagal: ${mintShort} — No Jupiter route\nBalance: ${token.uiAmount} tokens (~$${token.usdValue.toFixed(2)})`);
+      // Route check with partial-fallback: public.jupiterapi.com often lacks depth
+      // for the full balance on thin tokens but can clear at /2, /4, /10.
+      const fullAmount = parseInt(token.amount);
+      const fractions = [1, 2, 4, 10];
+      let swapAmount = token.amount;
+      let hasRoute = false;
+      let lastRouteErr = null;
+      for (const frac of fractions) {
+        const testAmount = String(Math.floor(fullAmount / frac));
+        if (parseInt(testAmount) <= 0) break;
+        try {
+          await getJupiterQuote(token.mint, testAmount, 100);
+          swapAmount = testAmount;
+          hasRoute = true;
+          if (frac > 1) console.log(`[AutoSwap] ${mintShort} full-size NO_ROUTES, amount/${frac} routes OK — partial swap`);
+          break;
+        } catch (err) {
+          const noRoutes = err.message?.includes("NO_ROUTES_FOUND") || err.message?.includes("No routes found");
+          lastRouteErr = err.message ?? null;
+          if (!noRoutes) {
+            // Non-route error (429/5xx/timeout) — bail without cooldown so we retry next cycle
+            console.warn(`[AutoSwap] ${mintShort} route check error [${frac === 1 ? "full" : `amount/${frac}`}]: ${err.message?.slice(0, 80)}`);
+            break;
+          }
         }
       }
-      if (!hasRoute) continue;
+      if (!hasRoute) {
+        const isNoRoutes = lastRouteErr?.includes("NO_ROUTES_FOUND") || lastRouteErr?.includes("No routes found");
+        if (isNoRoutes) {
+          const hours = NO_ROUTES_COOLDOWN_MS / 3_600_000;
+          console.log(`[AutoSwap] ${mintShort} no route at full/2/4/10 → ${hours}h cooldown`);
+          addFailedSwap({
+            symbol: token.symbol,
+            tokenMint: token.mint,
+            amount: token.amount,
+            reason: "NO_ROUTES_FOUND even at amount/10",
+            cooldownMs: NO_ROUTES_COOLDOWN_MS,
+          });
+          await notifyTemp(`⚠️ Auto-swap skip: ${token.symbol ?? mintShort} — no Jupiter route (even at amount/10)\nBalance: ${token.uiAmount} (~$${token.usdValue.toFixed(2)}) — retry ${hours}h.`);
+        }
+        continue;
+      }
+
+      const swapAmountInt = parseInt(swapAmount);
+      const partialRatio = swapAmountInt / fullAmount;
+      const swapUiAmount = token.uiAmount * partialRatio;
+      const swapUsdValue = token.usdValue * partialRatio;
 
       let swapped = false;
       let lastReason = null;
       for (const slippage of SLIPPAGE_TIERS) {
         try {
-          console.log(`🔄 Swapping ${mintShort}... (${token.uiAmount}) ~$${token.usdValue.toFixed(2)} [slippage=${slippage}bps]`);
+          console.log(`🔄 Swapping ${mintShort}... (${swapUiAmount}) ~$${swapUsdValue.toFixed(2)} [slippage=${slippage}bps${partialRatio < 1 ? `, ${(partialRatio * 100).toFixed(0)}%` : ""}]`);
 
-          const quote = await getJupiterQuote(token.mint, token.amount, slippage);
+          const quote = await getJupiterQuote(token.mint, swapAmount, slippage);
           const outLamports = parseInt(quote.outAmount ?? "0");
           const outSol = outLamports / 1e9;
-          console.log(`[autoSwap] Quote: ${token.uiAmount} ${mintShort} → ${outSol.toFixed(6)} SOL`);
+          console.log(`[autoSwap] Quote: ${swapUiAmount} ${mintShort} → ${outSol.toFixed(6)} SOL`);
 
           const swapTxBase64 = await buildJupiterSwapTx(quote, wallet.publicKey.toString());
           const txBuf = Buffer.from(swapTxBase64, "base64");
@@ -294,13 +338,14 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
             lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
           }, "confirmed");
 
-          console.log(`✅ Swap success: ${mintShort} ($${token.usdValue.toFixed(2)}) → ${outSol.toFixed(4)} SOL | TX: https://solscan.io/tx/${sig}`);
+          const partialTag = partialRatio < 1 ? ` [${(partialRatio * 100).toFixed(0)}% partial]` : "";
+          console.log(`✅ Swap success: ${mintShort} ($${swapUsdValue.toFixed(2)})${partialTag} → ${outSol.toFixed(4)} SOL | TX: https://solscan.io/tx/${sig}`);
 
           if (notifyFn) {
             await notifyFn(
-              `🔄 <b>Auto-Swap</b>\n\n` +
+              `🔄 <b>Auto-Swap${partialTag}</b>\n\n` +
               `Token: <code>${token.mint.slice(0, 8)}...</code>\n` +
-              `Amount: ${token.uiAmount} (~$${token.usdValue.toFixed(2)})\n` +
+              `Amount: ${swapUiAmount} (~$${swapUsdValue.toFixed(2)})\n` +
               `Received: <b>${outSol.toFixed(4)} SOL</b>\n\n` +
               `🔍 <a href="https://solscan.io/tx/${sig}">View TX ↗</a>`
             );
