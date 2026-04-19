@@ -346,7 +346,7 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       try {
         const strict = isStrictHours();
         const trailActivation = strict ? 4 : (config.trailingTpActivation ?? 6);
-        const trailDrop = strict ? 2 : (config.trailingTpTrail ?? 3);
+        const trailDrop = strict ? 1 : (config.trailingTpTrail ?? 2);
         const { updatePositionField: ufTrail } = await import("./positionManager.js");
 
         // Activate trailing when PnL first reaches activation threshold

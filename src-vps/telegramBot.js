@@ -65,8 +65,48 @@ function registerCommands() {
   });
 
   bot.command("status", async (ctx) => { await ctx.replyWithHTML(buildStatusMessage(), mainMenu()); });
-  bot.command("pause", async (ctx) => { agentPaused = true; await ctx.replyWithHTML(`⏸️ <b>Oke, gue istirahat dulu.</b>`, resumeMenu()); });
-  bot.command("resume", async (ctx) => { agentPaused = false; await ctx.replyWithHTML(`▶️ <b>Siap, balik hunting alpha!</b>`, mainMenu()); });
+  bot.command("pause", async (ctx) => {
+    agentPaused = true;
+    try { const { manualPause } = await import("./dailyCircuitBreaker.js"); await manualPause("MANUAL"); } catch {}
+    await ctx.replyWithHTML(`⏸️ <b>Oke, gue istirahat dulu.</b>\nHunter + pending re-opens paused (persistent).`, resumeMenu());
+  });
+  bot.command("resume", async (ctx) => {
+    agentPaused = false;
+    try { const { manualResume } = await import("./dailyCircuitBreaker.js"); await manualResume(); } catch {}
+    await ctx.replyWithHTML(`▶️ <b>Siap, balik hunting alpha!</b>\nCircuit breaker reactivated (baseline unchanged).`, mainMenu());
+  });
+  bot.command("dailypnl", async (ctx) => {
+    try {
+      const { getDailyStatus } = await import("./dailyCircuitBreaker.js");
+      const s = await getDailyStatus();
+      const status = s.paused ? `⏸️ PAUSED (${s.pauseReason})` : "✅ ACTIVE";
+      const sign = (v) => (v >= 0 ? "+" : "");
+      const emoji = s.currentDeltaUsd >= 0 ? "🟢" : "🔴";
+      const priceNote = s.currentSolPriceOk ? "" : " (cached)";
+      const msg =
+        `📊 <b>DAILY CIRCUIT BREAKER</b>\n\n` +
+        `Date: ${s.date} (WIB)\n` +
+        `Status: ${status}\n\n` +
+        `<b>Baseline (00:00 WIB):</b>\n` +
+        `• SOL: ${s.baselineSol.toFixed(4)}\n` +
+        `• Price: $${s.baselineSolPrice.toFixed(2)}\n` +
+        `• Value: $${s.baselineUsdValue.toFixed(2)}\n\n` +
+        `<b>Current:</b>\n` +
+        `• SOL: ${s.currentTotalSol.toFixed(4)}\n` +
+        `• Price: $${s.currentSolPrice.toFixed(2)}${priceNote}\n` +
+        `• Value: $${s.currentUsdValue.toFixed(2)}\n\n` +
+        `<b>Delta:</b>\n` +
+        `${emoji} ${sign(s.currentDeltaSol)}${s.currentDeltaSol.toFixed(4)} SOL\n` +
+        `${emoji} ${sign(s.currentDeltaUsd)}$${s.currentDeltaUsd.toFixed(2)}\n\n` +
+        `<b>Limits:</b>\n` +
+        `• Profit pause: +$${s.profitTarget}\n` +
+        `• Loss pause: $${s.lossLimit}\n\n` +
+        `Last check: ${s.lastCheckAt ?? "N/A"}`;
+      await ctx.replyWithHTML(msg, mainMenu());
+    } catch (err) {
+      await ctx.reply(`❌ /dailypnl failed: ${err.message}`);
+    }
+  });
   bot.command("closeall", async (ctx) => { await ctx.replyWithHTML(`⚠️ <b>Yakin mau close semua posisi?</b>`, confirmCloseAllMenu()); });
 
   bot.command("wallet", async (ctx) => {

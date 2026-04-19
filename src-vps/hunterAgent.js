@@ -22,6 +22,7 @@ import { recordHunterRunResult } from "./thresholdEvolver.js";
 import { getPoolScoreAdjustment, recordPoolDeploy } from "./poolMemory.js";
 import { getCandles, getTASignal, getTAFromPriceChanges } from "./technicalAnalysis.js";
 import { isStrictHours, formatWIB, getWIBHour } from "./timeHelper.js";
+import { isPaused as isCircuitBreakerPaused, getPauseReason as getCircuitBreakerReason } from "./dailyCircuitBreaker.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
@@ -290,6 +291,10 @@ export async function runHunter() {
   recordLastRun("hunter");
 
   if (isAgentPaused()) { console.log("⏸️ [Hunter] paused"); return; }
+  if (isCircuitBreakerPaused()) {
+    console.log(`[Hunter] Skip scan: daily circuit breaker triggered (${getCircuitBreakerReason()})`);
+    return;
+  }
 
   // Daily loss limit
   const dailyLoss = getDailyLossSol();

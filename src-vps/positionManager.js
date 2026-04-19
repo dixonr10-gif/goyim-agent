@@ -78,7 +78,7 @@ export function clearGhostBlacklist() { saveGhostBlacklist({}); }
 let _cachedSolPrice = 80;
 let _solPriceCacheTime = 0;
 
-async function fetchSolPriceUsd() {
+export async function fetchSolPriceUsd() {
   // Return cache if fresh (< 30s)
   if (Date.now() - _solPriceCacheTime < 30_000 && _cachedSolPrice > 10) return _cachedSolPrice;
 
@@ -971,6 +971,15 @@ export async function processPendingReopens() {
       savePendingReopens(fresh);
       continue;
     }
+
+    // Daily circuit breaker: keep entry in queue, retry next cycle
+    try {
+      const { isPaused: isCbPaused, getPauseReason: cbReason } = await import("./dailyCircuitBreaker.js");
+      if (isCbPaused()) {
+        console.log(`  [PendingReopen] Skip ${entry.poolName ?? entry.pool?.slice(0,8)}: circuit breaker active (${cbReason()})`);
+        continue;
+      }
+    } catch {}
 
     // Skip re-open during strict hours — keep entry in queue for next cycle
     try {

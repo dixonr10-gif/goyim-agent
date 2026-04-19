@@ -9,8 +9,9 @@ import { runHunter } from "./src/hunterAgent.js";
 import { runHealer } from "./src/healerAgent.js";
 import { initTelegramBot, isAgentPaused, notifyMessage } from "./src/telegramBot.js";
 import { runHealthCheck } from "./src/healthCheck.js";
-import { getWIBHour, isStrictHours } from "./src/timeHelper.js";
+import { getWIBHour, getWIBMinute, isStrictHours } from "./src/timeHelper.js";
 import { startDailyPnLReport } from "./src/dailyReport.js";
+import { initDailyCircuitBreaker, startCircuitBreakerScheduler } from "./src/dailyCircuitBreaker.js";
 
 const HEALER_INTERVAL_MS = 1 * 60 * 1000;           // fixed 1min
 
@@ -25,6 +26,11 @@ console.log("");
 const tgBot = initTelegramBot();
 startDailyReviewScheduler(tgBot, config.telegramChatId);
 startDailyPnLReport(tgBot, config.telegramChatId);
+
+// ── Daily circuit breaker: init state + schedule 6h WIB-aligned checks ────────
+initDailyCircuitBreaker()
+  .then(() => startCircuitBreakerScheduler())
+  .catch(err => console.error("[CircuitBreaker] init failed:", err.message));
 
 // ── Healer: starts immediately, runs every 2min ───────────────────────────────
 global.lastHealerRun = Date.now();
@@ -73,6 +79,7 @@ setInterval(() => {
 let _lastStrictNotif = null;
 setInterval(() => {
   const h = getWIBHour();
+  const m = getWIBMinute();
   const startHour = parseInt(process.env.ACTIVE_HOURS_START) || 13;
   const startMin = parseInt(process.env.ACTIVE_HOURS_START_MIN) || 30;
   const endHour = parseInt(process.env.ACTIVE_HOURS_END) || 20;
@@ -81,12 +88,12 @@ setInterval(() => {
   const pad = (n) => String(n).padStart(2, "0");
   const startStr = `${pad(startHour)}:${pad(startMin)}`;
   const endStr = `${pad(endHour)}:${pad(endMin)}`;
-  if (h === startHour && _lastStrictNotif !== "enter") {
+  if (h === startHour && m >= startMin && _lastStrictNotif !== "enter") {
     _lastStrictNotif = "enter";
     notifyMessage(
       `⚠️ <b>Strict Hours Aktif</b>\n\n🕑 ${startStr} - ${endStr} WIB\n📉 SL: -6% → <b>-4%</b>\n🎯 TP activation: +6% → <b>+4%</b>\n📊 Trail: -3% → <b>-2%</b>\n💰 Min volume: $100k → <b>$200k</b>\n⏱ Max hold: ${maxHold}h → <b>2h</b>\n🔄 OOR kanan: 35m → <b>20m</b>\n🔄 OOR kiri: 15m → <b>10m</b>\n\nBot tetap jalan tapi lebih selektif!`
     ).catch(() => {});
-  } else if (h === endHour && _lastStrictNotif !== "exit") {
+  } else if (h === endHour && m >= endMin && _lastStrictNotif !== "exit") {
     _lastStrictNotif = "exit";
     notifyMessage(
       `✅ <b>Normal Hours</b>\n\n🕕 ${endStr} WIB - parameter kembali normal\n📉 SL: -6% | 🎯 TP: +6% | 📊 Trail: -3%\n💰 Min volume: $100k\n⏱ Max hold: ${maxHold}h | 🔄 OOR: 35m/15m`
