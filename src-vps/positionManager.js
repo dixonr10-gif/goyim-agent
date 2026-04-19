@@ -24,7 +24,7 @@ const GHOST_BL_FILE = path.resolve("data/ghost_blacklist.json");
 const PENDING_REOPEN_FILE = path.resolve("data/pending_reopen.json");
 const REOPEN_WAIT_MS = 5 * 60 * 1000; // OOR-right rebalance: wait 5min before re-entering
 
-function loadPendingReopens() {
+export function loadPendingReopens() {
   try {
     if (fs.existsSync(PENDING_REOPEN_FILE)) {
       return JSON.parse(fs.readFileSync(PENDING_REOPEN_FILE, "utf-8"));
@@ -215,12 +215,20 @@ export async function openPosition(decision) {
   const { targetPool, strategy, binRange, poolName } = decision;
   console.log("[OPEN] targetPool:", targetPool, "length:", targetPool?.length);
   if (!targetPool) throw new Error("No target pool");
-  
+
   // Validasi pool address adalah base58 valid
   const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const invalidChars = [...targetPool].filter(c => !BASE58.includes(c));
   if (invalidChars.length > 0) throw new Error(`Invalid pool address chars: ${invalidChars.join(",")}`);
   if (targetPool.length < 32 || targetPool.length > 44) throw new Error(`Invalid pool address length: ${targetPool.length}`);
+
+  // Final guard: 1 active position per pool. Hunter and processPendingReopens
+  // already filter upstream; this catches any code path that slipped through.
+  const alreadyInPool = Array.from(openPositions.values())
+    .some(p => p && !p.mock && p.pool === targetPool);
+  if (alreadyInPool) {
+    throw new Error(`Pool ${targetPool.slice(0, 8)} already has active position`);
+  }
 
   const wallet = await getWallet();
   const connection = getConnection();
@@ -948,6 +956,19 @@ export async function processPendingReopens() {
     if (ageMs < REOPEN_WAIT_MS) {
       const remainingS = Math.ceil((REOPEN_WAIT_MS - ageMs) / 1000);
       console.log(`  [PendingReopen] ${entry.poolName ?? entry.pool?.slice(0,8)}: ${remainingS}s remaining`);
+      continue;
+    }
+
+    // Guard: drop queue entry if pool already has an active position. Prevents
+    // the duplicate-on-same-pool race where Hunter opened a new position in
+    // the same pool while this entry was waiting through strict hours.
+    const poolTaken = Array.from(openPositions.values())
+      .some(p => p && !p.mock && p.pool === entry.pool);
+    if (poolTaken) {
+      console.log(`  [PendingReopen] Skip ${entry.poolName ?? entry.pool?.slice(0,8)}: pool already has active position, removing from queue`);
+      const fresh = loadPendingReopens();
+      delete fresh[key];
+      savePendingReopens(fresh);
       continue;
     }
 

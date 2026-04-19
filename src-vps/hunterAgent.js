@@ -8,7 +8,7 @@ import { scanPools, formatPoolsForLLM, fetchDexScreenerMeteora, getEffectiveApr 
 import { checkBundler } from "./bundlerChecker.js";
 import { analyzePool } from "./marketAnalyzer.js";
 import { agentDecide } from "./llmAgent.js";
-import { openPosition, getOpenPositions, syncOnChainPositions, checkWalletBalance, getPositionValue, closePosition } from "./positionManager.js";
+import { openPosition, getOpenPositions, syncOnChainPositions, checkWalletBalance, getPositionValue, closePosition, loadPendingReopens } from "./positionManager.js";
 import { recordTradeOpen, recordTradeClose, getMemoryContextForLLM, isPoolBlacklisted, getFullStats } from "./tradeMemory.js";
 import { getRecentLessonsForLLM } from "./postTradeAnalyzer.js";
 import { maybeLearnPatterns, getPatternsForLLM } from "./patternLearner.js";
@@ -467,9 +467,19 @@ export async function runHunter() {
       const name = p.poolName ?? p.tokenSymbol ?? "";
       return name.split(/[-\/]/)[0]?.toUpperCase();
     }).filter(Boolean));
+    // Also skip pools that have a pending re-open queued — avoids Hunter
+    // racing ahead and creating a duplicate position in the same pool.
+    const pendingReopens = loadPendingReopens();
+    const pendingPoolAddrs = new Set(
+      Object.values(pendingReopens).map(e => e?.pool).filter(Boolean)
+    );
 
     const availablePools = feeFiltered.filter(p => {
       if (openPoolAddrs.has(p.address)) return false;
+      if (pendingPoolAddrs.has(p.address)) {
+        console.log(`  [Hunter] Skip ${p.name}: pending reopen in queue`);
+        return false;
+      }
       const sym = (p.name ?? "").split(/[-\/]/)[0]?.toUpperCase();
       if (sym && openTokenSyms.has(sym)) {
         console.log(`  [Hunter] Skip ${p.name}: already have open position for ${sym}`);
@@ -909,6 +919,20 @@ export async function runHunter() {
 
               console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} final=${totalScore}/100`);
 
+              // Meme-default override: 10h data showed spot WR 25% avg -6.41%,
+              // bidask WR 50% avg +1.28%. When signal is medium (conf 70-79) and
+              // score is weak (<75), force bidask — the safer shape for volatile
+              // memes. Doesn't touch the existing BidAsk trigger above.
+              if (decision.strategy === "spot") {
+                const conf = decision.confidence ?? 0;
+                const isMediumConf = conf >= 70 && conf < 80;
+                const isLowScore = totalScore < 75;
+                if (isMediumConf && isLowScore) {
+                  decision.strategy = "bidask";
+                  console.log(`  [Strategy] Override spot→bidask: conf ${conf}, score ${totalScore} — meme default`);
+                }
+              }
+
               // Pattern-learner (patterns.json) found the sweet spot is confidence ≥ 78
               // AND oppScore ≥ 85 → 52-58% WR. Let such candidates bypass the < 40 floor
               // at bottom tier (4 SOL) instead of skipping them outright.
@@ -970,8 +994,18 @@ export async function runHunter() {
             } else {
             // Last-gate blacklist check — catches tokens blacklisted after initial filter
             const lastGateBL = isTokenBlacklisted(pool.name);
+            // HIGH_CONF_BLOCK — 48h review showed conf≥80 had 0% WR, -5.13% avg.
+            // Require finalScore ≥ 65 AND chart not in dump/exhaustion pattern.
+            const highConfPattern = pool.chart?.pattern ?? null;
+            const highConfBlocked = decision.confidence >= 80 && (
+              totalScore < 65 ||
+              highConfPattern === "PUMP_EXHAUSTION" ||
+              highConfPattern === "DUMPING"
+            );
             if (lastGateBL.blacklisted) {
               console.log(`⛔ Blocked: ${pool.name} is blacklisted (last-gate check) — ${lastGateBL.reason}`);
+            } else if (highConfBlocked) {
+              console.log(`  [Hunter] ⛔ HIGH_CONF_BLOCK ${pool.name}: conf ${decision.confidence} but score ${totalScore} or pattern ${highConfPattern ?? "unknown"}`);
             } else {
             const origMax = config.maxSolPerPosition;
             try {
