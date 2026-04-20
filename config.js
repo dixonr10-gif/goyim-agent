@@ -45,6 +45,13 @@ export const config = {
   maxVolume24h:     parseFloat(process.env.MAX_VOLUME_24H)   || 15_000_000,
   minLiquidityUsd:  parseFloat(process.env.MIN_LIQUIDITY_USD) || 15_000,
   maxLiquidityUsd:  parseFloat(process.env.MAX_LIQUIDITY_USD) || 1_000_000,
+
+  // Bin Array Init Cost Guard: Meteora DLMM charges ~0.07144 SOL rent per
+  // uninitialized BinArray (70 bins), and the bot never closes the account so
+  // the rent is non-refundable. Skip deploys whose estimated init cost exceeds
+  // the cap to avoid eating 40–80% of target profit on sparse meme pools.
+  binArrayInitCostSol: Number(process.env.BIN_ARRAY_INIT_COST_SOL) || 0.07144,
+  maxBinArrayInitSol:  Number(process.env.MAX_BIN_ARRAY_INIT_SOL)  || 0.07144,
 };
 
 // Validasi wajib ada

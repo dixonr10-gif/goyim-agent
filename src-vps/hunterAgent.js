@@ -1044,7 +1044,8 @@ export async function runHunter() {
                 msg.includes("Too old") || msg.includes("Too new") ||
                 msg.includes("Vol too") || msg.includes("Wash trading") ||
                 msg.includes("Liq too") || msg.includes("rug risk") ||
-                msg.includes("Pool not DLMM");
+                msg.includes("Pool not DLMM") ||
+                msg.includes("BIN_ARRAY_INIT_COST_HIGH");
 
               if (isFilterRejection) {
                 console.log(`  ⏭️ Skip: ${msg.slice(0, 80)}`);

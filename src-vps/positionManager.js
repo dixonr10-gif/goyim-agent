@@ -211,6 +211,71 @@ export async function checkWalletBalance() {
   }
 }
 
+// ── Bin Array Init Cost Guard ────────────────────────────────────────────
+// Simulate the open-position TX and count InitializeBinArray invocations in
+// the logs. Each init costs ~0.07144 SOL rent that the bot never reclaims
+// (we don't close BinArray accounts), so a sparse-LP pool can silently burn
+// 2–3× the fee in non-refundable rent. Permissive on any simulation failure
+// so RPC flakes never block the bot.
+const BIN_ARRAY_SKIP_FILE = path.resolve("data/bin_array_skips.json");
+
+async function checkBinArrayInitCost(connection, transaction, signers = []) {
+  try {
+    // Fill feePayer so serialize() doesn't choke; blockhash is replaced RPC-side.
+    if (!transaction.feePayer && signers[0]?.publicKey) {
+      transaction.feePayer = signers[0].publicKey;
+    }
+    if (!transaction.recentBlockhash) {
+      // web3.js requires *some* blockhash to serialize; the RPC overrides it.
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      transaction.recentBlockhash = blockhash;
+    }
+    // Raw RPC with sigVerify=false + replaceRecentBlockhash avoids the
+    // web3.js message-compile path that trips on the SDK's tx shape
+    // ("Cannot read properties of undefined (reading 'numRequiredSignatures')").
+    const b64 = transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+    const res = await fetch(connection.rpcEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "simulateTransaction",
+        params: [b64, { sigVerify: false, replaceRecentBlockhash: true, encoding: "base64", commitment: "confirmed" }],
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const json = await res.json();
+    const val = json?.result?.value;
+    if (!val || val.err) {
+      const errStr = val?.err ? JSON.stringify(val.err) : (json?.error?.message ?? "no response");
+      console.warn(`[BinArrayGuard] Simulation failed, allowing deploy: ${errStr}`);
+      return { wouldInit: false, count: 0, estimatedCostSol: 0, simulationFailed: true };
+    }
+    const logs = val.logs || [];
+    const initCount = logs.filter(l => /InitializeBinArray|initialize_bin_array/i.test(l)).length;
+    const estimatedCostSol = initCount * config.binArrayInitCostSol;
+    return { wouldInit: initCount > 0, count: initCount, estimatedCostSol, simulationFailed: false };
+  } catch (err) {
+    console.warn(`[BinArrayGuard] Error during check, allowing deploy: ${err.message}`);
+    return { wouldInit: false, count: 0, estimatedCostSol: 0, simulationFailed: true };
+  }
+}
+
+function recordBinArraySkip(entry) {
+  try {
+    let log = [];
+    if (fs.existsSync(BIN_ARRAY_SKIP_FILE)) {
+      try { log = JSON.parse(fs.readFileSync(BIN_ARRAY_SKIP_FILE, "utf-8")); } catch {}
+      if (!Array.isArray(log)) log = [];
+    }
+    log.push(entry);
+    fs.writeFileSync(BIN_ARRAY_SKIP_FILE, JSON.stringify(log.slice(-500), null, 2));
+  } catch (err) {
+    console.warn(`[BinArrayGuard] skip-log write failed: ${err.message}`);
+  }
+}
+
 export async function openPosition(decision) {
   const { targetPool, strategy, binRange, poolName } = decision;
   console.log("[OPEN] targetPool:", targetPool, "length:", targetPool?.length);
@@ -324,6 +389,35 @@ export async function openPosition(decision) {
           },
           slippage,
         });
+
+        // Bin-array init cost guard: only on first attempt — the slippage-retry
+        // rebuild yields the same instructions, so re-simulating wastes an RPC.
+        if (attempt === 1) {
+          const guard = await checkBinArrayInitCost(connection, tx, [wallet, positionKeypair]);
+          const label = poolName ?? `${targetPool.slice(0, 8)}...`;
+          if (guard.simulationFailed) {
+            console.log(`[BinArrayGuard] ${label}: simulation unavailable, proceeding (permissive)`);
+          } else if (guard.estimatedCostSol > config.maxBinArrayInitSol) {
+            console.log(`[BinArrayGuard] SKIP ${label}: would init ${guard.count} bin array(s) (cost ${guard.estimatedCostSol.toFixed(5)} SOL > cap ${config.maxBinArrayInitSol} SOL)`);
+            recordBinArraySkip({
+              timestamp: new Date().toISOString(),
+              pool: targetPool,
+              tokenSymbol: altTokenSymbol ?? null,
+              initCount: guard.count,
+              costSol: Number(guard.estimatedCostSol.toFixed(6)),
+            });
+            const skipErr = new Error(`BIN_ARRAY_INIT_COST_HIGH: would init ${guard.count} bin array(s) = ${guard.estimatedCostSol.toFixed(5)} SOL`);
+            skipErr.reason = "BIN_ARRAY_INIT_COST_HIGH";
+            skipErr.initCount = guard.count;
+            skipErr.initCostSol = guard.estimatedCostSol;
+            throw skipErr;
+          } else if (guard.wouldInit) {
+            console.log(`[BinArrayGuard] ${label}: ${guard.count} bin array(s) init, cost ${guard.estimatedCostSol.toFixed(5)} SOL (within cap), proceeding`);
+          } else {
+            console.log(`[BinArrayGuard] ${label}: no bin array init needed, proceeding`);
+          }
+        }
+
         sig = await sendAndConfirmTransaction(connection, tx, [wallet, positionKeypair]);
         break;
       } catch (err) {
