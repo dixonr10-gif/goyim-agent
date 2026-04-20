@@ -107,7 +107,7 @@ export async function fetchPoolStats(address) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
-    const res = await fetch(`${METEORA_API}/pair/${address}`, {
+    const res = await fetch(`${METEORA_API}/pools/${address}`, {
       signal: controller.signal,
       headers: { "Accept": "application/json" }
     });
