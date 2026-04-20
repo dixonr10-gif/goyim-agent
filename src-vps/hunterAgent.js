@@ -23,6 +23,7 @@ import { getPoolScoreAdjustment, recordPoolDeploy } from "./poolMemory.js";
 import { getCandles, getTASignal, getTAFromPriceChanges } from "./technicalAnalysis.js";
 import { isStrictHours, formatWIB, getWIBHour } from "./timeHelper.js";
 import { isPaused as isCircuitBreakerPaused, getPauseReason as getCircuitBreakerReason } from "./dailyCircuitBreaker.js";
+import { getTokenAgeHours, classifyAgeTier, extractTokenMint } from "./tokenAge.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
@@ -605,6 +606,39 @@ export async function runHunter() {
         console.log(`  ⚠️ Chart error for ${pool.name}: ${err.message}`);
       }
     }));
+
+    // Part 17 — Age filter + OHLCV requirement. A pool with no chart = no OHLCV
+    // data (DexScreener enrichment miss, dead token, or brand-new mint before
+    // any candle forms). Rule: no data → SKIP regardless of age. Tokens with
+    // data get tagged with ageHours/ageTier for downstream LLM context; no
+    // additional strictness is applied here — existing filters handle that.
+    console.log("\n🎂 Age filter (OHLCV required)...");
+    for (let i = preFilteredPools.length - 1; i >= 0; i--) {
+      const pool = preFilteredPools[i];
+      if (!pool.chart) {
+        console.log(`  [AgeFilter] SKIP ${pool.name}: no OHLCV data`);
+        preFilteredPools.splice(i, 1);
+        continue;
+      }
+    }
+    // Fetch token ages in parallel for the survivors — Helius RPC is the slow
+    // step, so we batch. Permissive: on null (Helius fail), we leave ageHours
+    // undefined and let the LLM treat it as unknown rather than block.
+    await Promise.all(preFilteredPools.map(async (pool) => {
+      const mint = extractTokenMint(pool);
+      if (!mint) return;
+      const ageHours = await getTokenAgeHours(mint);
+      if (ageHours == null) {
+        console.log(`  [AgeFilter] ${pool.name}: token age unavailable — proceeding (permissive)`);
+        return;
+      }
+      const tier = classifyAgeTier(ageHours);
+      pool.ageHours = ageHours;
+      pool.ageTier = tier;
+      pool.tokenMint = mint;
+      console.log(`  [AgeFilter] ${pool.name}: ${ageHours.toFixed(1)}h (${tier}) — OHLCV available, proceed`);
+    }));
+    if (preFilteredPools.length === 0) { console.log("⚠️ All pools failed age filter."); return; }
 
     for (const pool of preFilteredPools) {
       pool.poolMem = getPoolScoreAdjustment(pool.address);

@@ -330,6 +330,10 @@ export function formatPoolsForLLM(pools) {
     tvl: Math.round(p.tvl ?? 0),
     binStep: p.pool_config?.bin_step,
     ageMinutes: getPoolAgeMinutes(p)?.toFixed(0) ?? "unknown",
+    // Part 17: on-chain token mint age + risk tier. Unknown ⇒ Helius failed,
+    // which the LLM should interpret as "no age signal", not "safe".
+    tokenAgeHours: typeof p.ageHours === "number" ? Number(p.ageHours.toFixed(1)) : null,
+    tokenAgeTier: p.ageTier ?? "UNKNOWN",
     uptrend: p.uptrend ?? false,
     aprScore: p.aprScore?.toFixed(2) ?? "0",
     organicScore: p.organicScore ?? 50,

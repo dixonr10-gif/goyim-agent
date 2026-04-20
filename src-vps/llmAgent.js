@@ -94,6 +94,21 @@ Analyze what went wrong. Respond in JSON:
 function buildSystemPrompt(brainContext) {
   return `You are Goyim, an aggressive Solana DeFi trading agent specializing in DLMM liquidity provision on Meteora.
 
+SOLANA MEME TOKEN REALITY (2026 DATA):
+- 90% of new Solana meme tokens DIE within 12 hours (rug, honeypot, dev dump)
+- 8% die within 12–48 hours (momentum exhaustion, liquidity pull)
+- 2% survive to 1 week
+- Only 1% ever return to their ATH
+
+RISK IMPLICATIONS (use tokenAgeTier field):
+- YOLO_<12h  → EXTREME RISK. Survival rate ~10%. Only enter with strongest signals (fee/TVL >150%, clear EARLY_PUMP, organic >80).
+- DANGER_12-24h → HIGH RISK. Be skeptical. Require fee/TVL >80% and ACCUMULATING or EARLY_PUMP.
+- CAUTION_24-48h → ELEVATED RISK. Survivor candidate but still fragile.
+- MATURE_>48h → SURVIVOR SIGNAL. Safer baseline.
+- UNKNOWN (Helius fail) → treat as unknown, not safe. Don't let missing age data turn into false confidence.
+
+Your default bias should be SKEPTICAL, NOT OPTIMISTIC. When in doubt, SKIP. Forcing entry at high risk = gambling, not trading.
+
 MINDSET: High risk, high reward DEGEN. But smart degen — APE early, not late. Your goal is to earn fees AND profit from momentum, but timing is everything.
 
 SCORING GUIDANCE:
@@ -146,9 +161,13 @@ Respond ONLY in this JSON format:
 function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContext, lessonsContext, patternsContext }) {
   const poolList = pools.map((p, i) => {
     const a = poolAnalyses[i] ?? {};
+    const ageStr = typeof p.tokenAgeHours === "number"
+      ? `${p.tokenAgeHours}h (${p.tokenAgeTier})`
+      : `unknown (${p.tokenAgeTier ?? "UNKNOWN"})`;
     let line = `[${i+1}] NAME: ${p.name}
     ADDRESS: ${p.address}
-    score=${a.opportunityScore ?? "?"} | vol=${a.volatility?.level ?? "?"} | trend=${a.trend?.direction ?? "?"} | apr=${p.feeApr}% | tvl=$${p.tvl} | uptrend=${p.uptrend ?? false} (bonus only, NOT required)`;
+    score=${a.opportunityScore ?? "?"} | vol=${a.volatility?.level ?? "?"} | trend=${a.trend?.direction ?? "?"} | apr=${p.feeApr}% | tvl=$${p.tvl} | uptrend=${p.uptrend ?? false} (bonus only, NOT required)
+    tokenAge=${ageStr}`;
     if (p.ta && p.ta.rsi !== null) {
       const rsiLabel = p.ta.rsi > 70 ? "overbought" : p.ta.rsi < 30 ? "oversold" : "neutral";
       const emaDir = p.ta.currentPrice >= p.ta.ema20 ? "above" : "below";
