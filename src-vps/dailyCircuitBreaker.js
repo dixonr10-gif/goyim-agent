@@ -159,8 +159,11 @@ export async function checkCircuitBreaker({ silent = false } = {}) {
   const portfolio = await getTotalPortfolioSol();
   const { price: solPrice, ok: priceOk } = await safeSolPrice(_state.baselineSolPrice);
   const currentUsd = portfolio.totalSol * solPrice;
-  const deltaUsd = currentUsd - _state.baselineUsdValue;
+  // Trading-only PnL: delta measured in SOL quantity, then valued at the CURRENT
+  // SOL price. This isolates trading performance from SOL's USD price drift — a
+  // SOL price dump with flat quantity shouldn't trip the loss limit.
   const deltaSol = portfolio.totalSol - _state.baselineSol;
+  const deltaUsd = deltaSol * solPrice;
 
   const wibTime = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(11, 16);
   const check = {
@@ -245,8 +248,9 @@ export async function getDailyStatus() {
   const portfolio = await getTotalPortfolioSol();
   const { price: solPrice, ok: priceOk } = await safeSolPrice(_state.baselineSolPrice);
   const currentUsd = portfolio.totalSol * solPrice;
-  const deltaUsd = currentUsd - _state.baselineUsdValue;
+  // Trading-only PnL (matches checkCircuitBreaker): delta in SOL × current price.
   const deltaSol = portfolio.totalSol - _state.baselineSol;
+  const deltaUsd = deltaSol * solPrice;
 
   return {
     date: _state.date,
@@ -268,11 +272,11 @@ export async function getDailyStatus() {
   };
 }
 
-// ── WIB-aligned 6-hour scheduler ──────────────────────────────────────────
-// Fires at 00:00, 06:00, 12:00, 18:00 WIB. 00:00 performs resetDaily before
-// the check. Per-slot dedupe so repeated 60s ticks within the same minute
-// don't trigger twice.
-const SCHEDULE_SLOTS = [0, 6, 12, 18]; // WIB hours
+// ── WIB-aligned 3-hour scheduler ──────────────────────────────────────────
+// Fires at 00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 WIB (8x/day).
+// 00:00 performs resetDaily before the check. Per-slot dedupe so repeated 60s
+// ticks within the same minute don't trigger twice.
+const SCHEDULE_SLOTS = [0, 3, 6, 9, 12, 15, 18, 21]; // WIB hours
 let _lastFiredSlotKey = null;
 
 export function startCircuitBreakerScheduler() {

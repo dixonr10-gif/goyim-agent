@@ -77,32 +77,7 @@ function registerCommands() {
   });
   bot.command("dailypnl", async (ctx) => {
     try {
-      const { getDailyStatus } = await import("./dailyCircuitBreaker.js");
-      const s = await getDailyStatus();
-      const status = s.paused ? `⏸️ PAUSED (${s.pauseReason})` : "✅ ACTIVE";
-      const sign = (v) => (v >= 0 ? "+" : "");
-      const emoji = s.currentDeltaUsd >= 0 ? "🟢" : "🔴";
-      const priceNote = s.currentSolPriceOk ? "" : " (cached)";
-      const msg =
-        `📊 <b>DAILY CIRCUIT BREAKER</b>\n\n` +
-        `Date: ${s.date} (WIB)\n` +
-        `Status: ${status}\n\n` +
-        `<b>Baseline (00:00 WIB):</b>\n` +
-        `• SOL: ${s.baselineSol.toFixed(4)}\n` +
-        `• Price: $${s.baselineSolPrice.toFixed(2)}\n` +
-        `• Value: $${s.baselineUsdValue.toFixed(2)}\n\n` +
-        `<b>Current:</b>\n` +
-        `• SOL: ${s.currentTotalSol.toFixed(4)}\n` +
-        `• Price: $${s.currentSolPrice.toFixed(2)}${priceNote}\n` +
-        `• Value: $${s.currentUsdValue.toFixed(2)}\n\n` +
-        `<b>Delta:</b>\n` +
-        `${emoji} ${sign(s.currentDeltaSol)}${s.currentDeltaSol.toFixed(4)} SOL\n` +
-        `${emoji} ${sign(s.currentDeltaUsd)}$${s.currentDeltaUsd.toFixed(2)}\n\n` +
-        `<b>Limits:</b>\n` +
-        `• Profit pause: +$${s.profitTarget}\n` +
-        `• Loss pause: $${s.lossLimit}\n\n` +
-        `Last check: ${s.lastCheckAt ?? "N/A"}`;
-      await ctx.replyWithHTML(msg, mainMenu());
+      await ctx.replyWithHTML(await buildDailyPnLMessage(), mainMenu());
     } catch (err) {
       await ctx.reply(`❌ /dailypnl failed: ${err.message}`);
     }
@@ -693,6 +668,14 @@ function registerCallbacks() {
   bot.action("winrate", async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.editMessageText(buildWinRateMessage(), { parse_mode: "HTML", ...mainMenu() });
+  });
+  bot.action("daily_pnl", async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      await ctx.editMessageText(await buildDailyPnLMessage(), { parse_mode: "HTML", ...mainMenu() });
+    } catch (err) {
+      await ctx.reply(`❌ ${err.message}`);
+    }
   });
   bot.action("history", async (ctx) => {
     await ctx.answerCbQuery();
@@ -1307,6 +1290,36 @@ function buildHistoryMessage() {
   return msg;
 }
 
+async function buildDailyPnLMessage() {
+  const { getDailyStatus } = await import("./dailyCircuitBreaker.js");
+  const s = await getDailyStatus();
+  const status = s.paused ? `⏸️ PAUSED (${s.pauseReason})` : "✅ ACTIVE";
+  const sign = (v) => (v >= 0 ? "+" : "");
+  const emoji = s.currentDeltaUsd >= 0 ? "🟢" : "🔴";
+  const priceNote = s.currentSolPriceOk ? "" : " (cached)";
+  return (
+    `📊 <b>DAILY CIRCUIT BREAKER</b>\n` +
+    `<i>Trading-only PnL (SOL price ignored)</i>\n\n` +
+    `Date: ${s.date} (WIB)\n` +
+    `Status: ${status}\n\n` +
+    `<b>Baseline (00:00 WIB):</b>\n` +
+    `• SOL: ${s.baselineSol.toFixed(4)}\n` +
+    `• Price: $${s.baselineSolPrice.toFixed(2)}\n` +
+    `• Value: $${s.baselineUsdValue.toFixed(2)}\n\n` +
+    `<b>Current:</b>\n` +
+    `• SOL: ${s.currentTotalSol.toFixed(4)}\n` +
+    `• Price: $${s.currentSolPrice.toFixed(2)}${priceNote}\n` +
+    `• Value: $${s.currentUsdValue.toFixed(2)}\n\n` +
+    `<b>Delta (trading-only):</b>\n` +
+    `${emoji} ${sign(s.currentDeltaSol)}${s.currentDeltaSol.toFixed(4)} SOL\n` +
+    `${emoji} ${sign(s.currentDeltaUsd)}$${s.currentDeltaUsd.toFixed(2)} @ current price\n\n` +
+    `<b>Limits:</b>\n` +
+    `• Profit pause: +$${s.profitTarget}\n` +
+    `• Loss pause: $${s.lossLimit}\n\n` +
+    `Last check: ${s.lastCheckAt ?? "N/A"}`
+  );
+}
+
 async function buildLessonsMessage() {
   try {
     const { getRecentLessons } = await import("./dailyLessons.js");
@@ -1335,7 +1348,8 @@ function mainMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("📊 Status", "status"), Markup.button.callback("📋 Positions", "positions")],
     [Markup.button.callback("👛 Wallet", "wallet"), Markup.button.callback("🏆 Win Rate", "winrate")],
-    [Markup.button.callback("📜 History", "history"), Markup.button.callback("📋 Daily Review", "review"), Markup.button.callback("📚 Lessons", "lessons")],
+    [Markup.button.callback("📊 Daily PnL", "daily_pnl"), Markup.button.callback("📜 History", "history")],
+    [Markup.button.callback("📋 Daily Review", "review"), Markup.button.callback("📚 Lessons", "lessons")],
     [Markup.button.callback("🔄 Refresh", "refresh")],
     [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("👀 Watchlist", "btn_watchlist")],
     [Markup.button.callback("⏳ Cooldown", "btn_cooldown"), Markup.button.callback("📋 Logs", "btn_logs")],
