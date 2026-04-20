@@ -531,23 +531,8 @@ function registerCommands() {
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }
   });
 
-  bot.command("help", async (ctx) => {
-    await ctx.replyWithHTML(
-      `<b>📖 Commands:</b>\n\n` +
-      `/status — Status agent\n/wallet — Saldo wallet\n/pnl — P&L summary\n` +
-      `/winrate — Win rate\n/history — Riwayat trade\n/positions — Posisi aktif\n` +
-      `/review — Daily review\n/evolve — Evolve thresholds\n` +
-      `/candidates — Pool scan results\n/thresholds — Config thresholds\n` +
-      `/cooldowns — Active token cooldowns\n/blacklist — Blacklisted tokens\n` +
-      `/watchlist — Token watch list\n/unblacklist [sym] — Remove from blacklist\n` +
-      `/logs [keyword] — PM2 logs (filter optional)\n` +
-      `/learn [pool] — Study LP patterns\n` +
-      `/recordclose SYM PNL SOL — Catat close manual\n` +
-      `/pause & /resume — Jeda/lanjut\n/closeall — Tutup semua\n\n` +
-      `<b>CA Scanner:</b> Kirim contract address langsung ke chat!\n\n` +
-      `<i>Atau langsung chat aja!</i>`
-    );
-  });
+  bot.command("help",     async (ctx) => { await ctx.replyWithHTML(buildCommandsMessage(), mainMenu()); });
+  bot.command("commands", async (ctx) => { await ctx.replyWithHTML(buildCommandsMessage(), mainMenu()); });
 
   
 // Handle foto dari user
@@ -700,6 +685,14 @@ function registerCallbacks() {
     await ctx.answerCbQuery();
     try {
       await ctx.editMessageText(await buildDailyPnLMessage(), { parse_mode: "HTML", ...mainMenu() });
+    } catch (err) {
+      await ctx.reply(`❌ ${err.message}`);
+    }
+  });
+  bot.action("available_commands", async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      await ctx.editMessageText(buildCommandsMessage(), { parse_mode: "HTML", disable_web_page_preview: true, ...mainMenu() });
     } catch (err) {
       await ctx.reply(`❌ ${err.message}`);
     }
@@ -1317,6 +1310,56 @@ function buildHistoryMessage() {
   return msg;
 }
 
+// Command reference — shown by /help, /commands, and the ❓ Available Commands
+// button. Lists only commands actually registered above (audited against
+// bot.command(...) call sites); /close-by-id intentionally omitted since it's
+// a button-only action, not a slash command.
+function buildCommandsMessage() {
+  const sep = "━━━━━━━━━━━━━━━━━━━━━";
+  return (
+    `📖 <b>AVAILABLE COMMANDS</b>\n\n` +
+    `${sep}\n🎯 <b>TRADING &amp; POSITIONS</b>\n${sep}\n` +
+    `/status — Status bot + last hunter/healer cycle\n` +
+    `/positions — Open positions aktif\n` +
+    `/wallet — Wallet balance (SOL + tokens)\n` +
+    `/closeall — Close semua open positions\n` +
+    `/recordclose SYM PNL SOL — Record close manual\n` +
+    `/candidates — Last pool scan results\n` +
+    `/ghosts — Ghost-blacklisted positions\n\n` +
+    `${sep}\n📊 <b>MONITORING &amp; REVIEW</b>\n${sep}\n` +
+    `/history — Trade history + stats\n` +
+    `/winrate — Win rate statistics\n` +
+    `/pnl — PnL summary\n` +
+    `/review — Daily review (LLM-generated)\n` +
+    `/lessons — Lessons dari trade memory\n` +
+    `/logs [keyword] — Recent PM2 logs\n\n` +
+    `${sep}\n🚨 <b>CIRCUIT BREAKER</b>\n${sep}\n` +
+    `/dailypnl — Status breaker + baseline/current\n` +
+    `/pause — Manual pause Hunter (indefinite)\n` +
+    `/resume — Resume (CONFIRM if hedge-paused)\n` +
+    `/hedge_status — SOL-dump hedge status\n` +
+    `/sol24h — SOL price change 24h\n\n` +
+    `${sep}\n🎯 <b>FILTER &amp; CONTROL</b>\n${sep}\n` +
+    `/blacklist — View blacklisted tokens\n` +
+    `/blacklist add &lt;sym&gt; — Add token ke blacklist\n` +
+    `/blacklist remove &lt;sym&gt; — Remove dari blacklist\n` +
+    `/unblacklist &lt;sym&gt; — Alias /blacklist remove\n` +
+    `/watchlist — Tokens yang lagi diobservasi\n` +
+    `/cooldown — Active token cooldowns\n` +
+    `/learn [pool] — Study LP patterns (LLM)\n` +
+    `/evolve — Run threshold evolution\n\n` +
+    `${sep}\n⚙️ <b>SYSTEM</b>\n${sep}\n` +
+    `/thresholds — Current filter thresholds\n` +
+    `/restart — Restart PM2 process\n` +
+    `/pm2status — PM2 status detail\n\n` +
+    `${sep}\n❓ <b>HELP</b>\n${sep}\n` +
+    `/commands or /help — Show this menu\n` +
+    `/start — Reset menu\n\n` +
+    `<b>Pro tip:</b> paste contract address langsung buat auto-scan.\n\n` +
+    `<i>Last updated: Part 16 (20 Apr 2026)</i>`
+  );
+}
+
 function formatDurationShort(ms) {
   if (ms == null || ms <= 0) return "0m";
   const h = Math.floor(ms / 3_600_000);
@@ -1452,6 +1495,7 @@ async function buildLessonsMessage() {
 
 function mainMenu() {
   return Markup.inlineKeyboard([
+    [Markup.button.callback("❓ Available Commands", "available_commands")],
     [Markup.button.callback("📊 Status", "status"), Markup.button.callback("📋 Positions", "positions")],
     [Markup.button.callback("👛 Wallet", "wallet"), Markup.button.callback("🏆 Win Rate", "winrate")],
     [Markup.button.callback("📊 Daily PnL", "daily_pnl"), Markup.button.callback("📜 History", "history")],
