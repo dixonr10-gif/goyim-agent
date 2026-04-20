@@ -97,6 +97,37 @@ function isStablecoinOnly(poolName) {
   return tokens.every(t => SKIP_TOKENS.includes(t.trim()));
 }
 
+// Fetch one pool's current stats (for post-entry monitoring by the healer's
+// fee-APR-floor exit rule). Returns the raw pool object from the Meteora
+// datapi, or null on any failure so callers can apply a permissive fallback.
+// NOTE: the returned object uses the same shape as listings from
+// fetchPage(), so getEffectiveApr(poolData) works on it unchanged.
+export async function fetchPoolStats(address) {
+  if (!address) return null;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const res = await fetch(`${METEORA_API}/pair/${address}`, {
+      signal: controller.signal,
+      headers: { "Accept": "application/json" }
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      console.warn(`[fetchPoolStats] ${address.slice(0, 8)} HTTP ${res.status}`);
+      return null;
+    }
+    const text = await res.text();
+    if (!text || text.trim() === "") return null;
+    const data = JSON.parse(text);
+    // Meteora datapi wraps single-pool responses inconsistently — handle both
+    // { data: {...} } and the bare pool object shapes.
+    return data?.data ?? data ?? null;
+  } catch (err) {
+    console.warn(`[fetchPoolStats] ${address.slice(0, 8)} error: ${err.message}`);
+    return null;
+  }
+}
+
 async function fetchPage(page, sortKey = "fees", retries = 3) {
   for (let i = 1; i <= retries; i++) {
     try {

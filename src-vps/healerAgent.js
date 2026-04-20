@@ -3,6 +3,7 @@
 
 import { getOpenPositions, closePosition, getPositionValue, syncOnChainPositions } from "./positionManager.js";
 import { evaluateExits } from "./exitStrategy.js";
+import { fetchPoolStats } from "./poolScanner.js";
 
 // 200ms pacer between per-position RPC batches to avoid bursting Helius's rate limit
 // when Healer has multiple open positions to evaluate/close in a single cycle.
@@ -71,7 +72,7 @@ export async function runHealer() {
     console.log(`  Monitoring ${openPos.length} position(s)...`);
     const exits = await evaluateExits(
       openPos,
-      null,
+      async (poolAddr) => fetchPoolStats(poolAddr),
       async (pos) => getPositionValue(pos),
     );
 

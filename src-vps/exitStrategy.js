@@ -15,6 +15,25 @@ async function fetchTokenPriceChange1h(tokenMint) {
   } catch { return null; }
 }
 
+// Daily fee/TVL in percent from a Meteora datapi pool object. Mirrors
+// poolScanner.getEffectiveApr so the exit rule compares apples-to-apples
+// with MIN_FEE_APR_FILTER (entry) and MIN_FEE_APR_TO_HOLD (exit) — both
+// already expressed as daily fee/TVL percent. Kept inline to avoid a
+// healer → poolScanner → exitStrategy import cycle.
+function computeDailyFeeTvlPct(pool) {
+  const tvl = pool?.tvl ?? 0;
+  if (tvl <= 0) return null;
+  const fees24h = pool?.fees?.["24h"] ?? 0;
+  if (fees24h > 0) return (fees24h / tvl) * 100;
+  const volume24h = pool?.volume?.["24h"] ?? 0;
+  const feeRate = pool?.pool_config?.bin_step
+    ? pool.pool_config.bin_step * 0.0001
+    : 0.003;
+  const estimatedFees = volume24h * feeRate;
+  const fallbackPct = (estimatedFees / tvl) * 100;
+  return Math.min(fallbackPct, 30);
+}
+
 const EXIT_RULES = {
   takeProfitPercent: parseFloat(process.env.TAKE_PROFIT_PERCENT) || 25,
   stopLossPercent: parseFloat(process.env.STOP_LOSS_PCT ?? process.env.STOP_LOSS_PERCENT) || -6,
@@ -394,13 +413,26 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       }
 
       // ── Fee APR floor ─────────────────────────────────────────────────────
+      // Unit: daily fee/TVL in percent (same unit as MIN_FEE_APR_FILTER entry
+      // threshold). getEffectiveApr returns (fees24h / tvl) * 100; a freshly
+      // entered pool sits at 10–30%, a cold pool at <1%.
+      //
+      // Missing data → permissive skip (no exit). Real 0% (dead pool) → exit.
       if (getPoolData) {
         const poolData = await getPoolData(position.pool).catch(() => null);
-        if (poolData) {
-          const apr = poolData?.feeApr ?? 0;
-          if (apr > 0 && apr < EXIT_RULES.minFeeAprToHold) {
-            toClose.push({ positionId: position.id, code: "FEE_APR_FLOOR", reason: `fee APR too low: ${apr.toFixed(1)}%`, pnlPercent, currentValue });
+        if (!poolData) {
+          console.log(`  ⏳ ${position.id}: fee-floor check skipped (pool data unavailable)`);
+        } else {
+          const apr = computeDailyFeeTvlPct(poolData);
+          if (typeof apr === "number" && Number.isFinite(apr) && apr < EXIT_RULES.minFeeAprToHold) {
+            console.log(`  📉 ${position.id}: fee APR floor breach — daily fee/TVL ${apr.toFixed(2)}% < ${EXIT_RULES.minFeeAprToHold}% → EXIT`);
+            toClose.push({ positionId: position.id, code: "FEE_APR_FLOOR", reason: `fee APR too low: ${apr.toFixed(1)}% daily`, pnlPercent, currentValue });
             continue;
+          }
+          if (typeof apr === "number" && Number.isFinite(apr)) {
+            console.log(`  💧 ${position.id}: daily fee/TVL ${apr.toFixed(2)}% ≥ ${EXIT_RULES.minFeeAprToHold}% → hold`);
+          } else {
+            console.log(`  ⏳ ${position.id}: fee-floor check skipped (apr unparseable)`);
           }
         }
       }
