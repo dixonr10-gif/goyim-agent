@@ -127,15 +127,40 @@ async function fetchWithRateRetry(fn, label = "Jupiter") {
   }
 }
 
-async function getJupiterQuote(inputMint, amount, slippageBps = 100) {
+async function getJupiterQuote(inputMint, amount, slippageBps = 100, outputMint = WSOL) {
   return fetchWithRateRetry(async () => {
-    const url = `${JUP_QUOTE_URL}?inputMint=${inputMint}&outputMint=${WSOL}&amount=${amount}&slippageBps=${slippageBps}`;
+    const url = `${JUP_QUOTE_URL}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`Jupiter quote failed: ${res.status} ${await res.text().catch(() => "")}`);
     const quote = await res.json();
     if (quote.error) throw new Error(`Jupiter quote error: ${quote.error}`);
     return quote;
   }, "JupQuote");
+}
+
+// Part 16: SOL → USDC swap used by the advanced circuit breaker (profit
+// secure + dump hedge). Lives in autoSwap so it reuses the Jupiter tx-build
+// + signing/confirm plumbing already battle-tested against Token-2022.
+export async function swapSolToUsdc({ lamports, slippageBps = 100, usdcMint }) {
+  const { VersionedTransaction } = require("@solana/web3.js");
+  if (!lamports || lamports <= 0) throw new Error(`Invalid lamports: ${lamports}`);
+  if (!usdcMint) throw new Error("usdcMint required");
+  const wallet = await getWallet();
+  const connection = getConnection();
+  const quote = await getJupiterQuote(WSOL, String(lamports), slippageBps, usdcMint);
+  const outRaw = parseInt(quote.outAmount ?? "0");
+  const swapTxBase64 = await buildJupiterSwapTx(quote, wallet.publicKey.toString());
+  const tx = VersionedTransaction.deserialize(Buffer.from(swapTxBase64, "base64"));
+  tx.sign([wallet]);
+  const latestBlockhash = await connection.getLatestBlockhash("confirmed");
+  const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+  await connection.confirmTransaction({
+    signature: sig,
+    blockhash: latestBlockhash.blockhash,
+    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+  }, "confirmed");
+  // USDC has 6 decimals; expose both raw and UI amounts for the notifier.
+  return { signature: sig, outAmountRaw: outRaw, outAmountUsd: outRaw / 1e6, inLamports: lamports };
 }
 
 async function buildJupiterSwapTx(quoteResponse, userPublicKey) {

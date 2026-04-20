@@ -71,8 +71,27 @@ function registerCommands() {
     await ctx.replyWithHTML(`⏸️ <b>Oke, gue istirahat dulu.</b>\nHunter + pending re-opens paused (persistent).`, resumeMenu());
   });
   bot.command("resume", async (ctx) => {
+    // `/resume CONFIRM` is required when a hedge pause is active so a mis-tapped
+    // menu button can't silently unwind the dump hedge.
+    const txt = (ctx.message?.text ?? "").trim();
+    const confirm = /\bCONFIRM\b/i.test(txt);
+    try {
+      const { manualResume } = await import("./dailyCircuitBreaker.js");
+      await manualResume({ confirm });
+    } catch (err) {
+      if (err?.requiresConfirm) {
+        await ctx.replyWithHTML(
+          `⚠️ <b>Resuming from SOL dump hedge</b>\n\n` +
+          `Verify SOL price recovered before resuming trading.\n` +
+          `Type <code>/resume CONFIRM</code> to proceed.`,
+          resumeMenu()
+        );
+        return;
+      }
+      await ctx.reply(`❌ /resume failed: ${err.message}`);
+      return;
+    }
     agentPaused = false;
-    try { const { manualResume } = await import("./dailyCircuitBreaker.js"); await manualResume(); } catch {}
     await ctx.replyWithHTML(`▶️ <b>Siap, balik hunting alpha!</b>\nCircuit breaker reactivated (baseline unchanged).`, mainMenu());
   });
   bot.command("dailypnl", async (ctx) => {
@@ -81,6 +100,14 @@ function registerCommands() {
     } catch (err) {
       await ctx.reply(`❌ /dailypnl failed: ${err.message}`);
     }
+  });
+  bot.command("hedge_status", async (ctx) => {
+    try { await ctx.replyWithHTML(await buildHedgeStatusMessage(), mainMenu()); }
+    catch (err) { await ctx.reply(`❌ /hedge_status failed: ${err.message}`); }
+  });
+  bot.command("sol24h", async (ctx) => {
+    try { await ctx.replyWithHTML(await buildSol24hMessage(), mainMenu()); }
+    catch (err) { await ctx.reply(`❌ /sol24h failed: ${err.message}`); }
   });
   bot.command("closeall", async (ctx) => { await ctx.replyWithHTML(`⚠️ <b>Yakin mau close semua posisi?</b>`, confirmCloseAllMenu()); });
 
@@ -1290,18 +1317,46 @@ function buildHistoryMessage() {
   return msg;
 }
 
+function formatDurationShort(ms) {
+  if (ms == null || ms <= 0) return "0m";
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 async function buildDailyPnLMessage() {
   const { getDailyStatus } = await import("./dailyCircuitBreaker.js");
   const s = await getDailyStatus();
-  const status = s.paused ? `⏸️ PAUSED (${s.pauseReason})` : "✅ ACTIVE";
   const sign = (v) => (v >= 0 ? "+" : "");
   const emoji = s.currentDeltaUsd >= 0 ? "🟢" : "🔴";
   const priceNote = s.currentSolPriceOk ? "" : " (cached)";
+
+  let status;
+  if (s.paused) {
+    const remaining = s.pauseRemainingMs != null
+      ? ` — ${formatDurationShort(s.pauseRemainingMs)} remaining`
+      : " — indefinite";
+    status = `⏸️ PAUSED (${s.pauseReason}${remaining})`;
+  } else {
+    status = "✅ ACTIVE";
+  }
+
+  const sol24hLine = typeof s.sol24hChangePct === "number"
+    ? `SOL 24h: ${sign(s.sol24hChangePct)}${s.sol24hChangePct.toFixed(2)}%\n`
+    : `SOL 24h: n/a (insufficient history)\n`;
+
+  const firedFlags =
+    `Profit: ${s.profitFired ? "✅" : "⏳"} | ` +
+    `Loss: ${s.lossFired ? "✅" : "⏳"} | ` +
+    `Hedge: ${s.hedgeFired ? "🚨" : "⏳"}`;
+
   return (
     `📊 <b>DAILY CIRCUIT BREAKER</b>\n` +
     `<i>Trading-only PnL (SOL price ignored)</i>\n\n` +
     `Date: ${s.date} (WIB)\n` +
-    `Status: ${status}\n\n` +
+    `Status: ${status}\n` +
+    sol24hLine +
+    `Triggers: ${firedFlags}\n\n` +
     `<b>Baseline (00:00 WIB):</b>\n` +
     `• SOL: ${s.baselineSol.toFixed(4)}\n` +
     `• Price: $${s.baselineSolPrice.toFixed(2)}\n` +
@@ -1317,6 +1372,57 @@ async function buildDailyPnLMessage() {
     `• Profit pause: +$${s.profitTarget}\n` +
     `• Loss pause: $${s.lossLimit}\n\n` +
     `Last check: ${s.lastCheckAt ?? "N/A"}`
+  );
+}
+
+async function buildHedgeStatusMessage() {
+  const { getHedgeStatus } = await import("./dailyCircuitBreaker.js");
+  const h = await getHedgeStatus();
+  if (!h.hedgeFired) {
+    return (
+      `🛡️ <b>HEDGE STATUS</b>\n\n` +
+      `Fired: ⏳ no\n` +
+      `Warning threshold: ${h.dumpWarningPct}% (24h)\n` +
+      `Trigger threshold: ${h.dumpTriggerPct}% (24h)\n\n` +
+      `Current SOL: $${h.currentSolPrice.toFixed(2)}${h.currentSolPriceOk ? "" : " (cached)"}\n` +
+      `<i>Hedge will auto-fire once if SOL drops below the trigger threshold.</i>`
+    );
+  }
+  const sign = (v) => (v >= 0 ? "+" : "");
+  const recovery = typeof h.recoveryPct === "number"
+    ? `${sign(h.recoveryPct)}${h.recoveryPct.toFixed(2)}%`
+    : "n/a";
+  return (
+    `🛡️ <b>HEDGE STATUS</b>\n\n` +
+    `Fired: 🚨 yes\n` +
+    `Pause reason: ${h.pauseReason ?? "(cleared)"}\n` +
+    `Triggered at: ${h.pauseTriggeredAt ?? "?"}\n\n` +
+    `SOL at trigger: $${h.solPriceAtTrigger?.toFixed(2) ?? "?"}\n` +
+    `SOL now:        $${h.currentSolPrice.toFixed(2)}${h.currentSolPriceOk ? "" : " (cached)"}\n` +
+    `Recovery from trigger: ${recovery}\n\n` +
+    `<i>Use <code>/resume CONFIRM</code> when market stabilizes.</i>`
+  );
+}
+
+async function buildSol24hMessage() {
+  const { getSol24hChange } = await import("./dailyCircuitBreaker.js");
+  const s = await getSol24hChange();
+  const sign = (v) => (v >= 0 ? "+" : "");
+  const priceNote = s.currentSolPriceOk ? "" : " (cached)";
+  const changeLine = typeof s.changePct === "number"
+    ? `${sign(s.changePct)}${s.changePct.toFixed(2)}%`
+    : "n/a (need ≥3h of history)";
+  const emoji = typeof s.changePct === "number"
+    ? (s.changePct <= s.triggerPct ? "🚨" : s.changePct <= s.warningPct ? "⚠️" : s.changePct >= 0 ? "🟢" : "🔴")
+    : "⏳";
+  return (
+    `📉 <b>SOL 24h CHANGE</b>\n\n` +
+    `${emoji} Change: <b>${changeLine}</b>\n\n` +
+    `Now:      $${s.currentSolPrice.toFixed(2)}${priceNote}\n` +
+    `24h ago:  ${s.solPrice24hAgo ? `$${s.solPrice24hAgo.toFixed(2)}` : "n/a"}\n\n` +
+    `<b>Thresholds:</b>\n` +
+    `• Warning: ${s.warningPct}%\n` +
+    `• Hedge trigger: ${s.triggerPct}%`
   );
 }
 

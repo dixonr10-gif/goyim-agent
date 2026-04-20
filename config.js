@@ -52,6 +52,19 @@ export const config = {
   // the cap to avoid eating 40–80% of target profit on sparse meme pools.
   binArrayInitCostSol: Number(process.env.BIN_ARRAY_INIT_COST_SOL) || 0.07144,
   maxBinArrayInitSol:  Number(process.env.MAX_BIN_ARRAY_INIT_SOL)  || 0.07144,
+
+  // Part 16 — advanced circuit breaker (profit secure + SOL-dump hedge).
+  // All envs Number()-coerced so an empty/missing env falls through to the
+  // default, while a set env wins. USDC mint is fixed (mainnet).
+  profitSecureUsd:    Number(process.env.PROFIT_SECURE_USD)    || 90,
+  profitPauseHours:   Number(process.env.PROFIT_PAUSE_HOURS)   || 8,
+  lossPauseHours:     Number(process.env.LOSS_PAUSE_HOURS)     || 12,
+  solDumpWarningPct:  Number(process.env.SOL_DUMP_WARNING_PCT) || -6,
+  solDumpTriggerPct:  Number(process.env.SOL_DUMP_TRIGGER_PCT) || -7,
+  walletSolReserve:   Number(process.env.WALLET_SOL_RESERVE)   || 0.5,
+  slippageProfitSwap: Number(process.env.SLIPPAGE_PROFIT_SWAP) || 100,
+  slippageHedgeSwap:  Number(process.env.SLIPPAGE_HEDGE_SWAP)  || 300,
+  usdcMint: process.env.USDC_MINT || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 };
 
 // Validasi wajib ada
