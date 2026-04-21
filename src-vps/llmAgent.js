@@ -109,6 +109,8 @@ RISK IMPLICATIONS (use tokenAgeTier field):
 
 Your default bias should be SKEPTICAL, NOT OPTIMISTIC. When in doubt, SKIP. Forcing entry at high risk = gambling, not trading.
 
+TVL DRAIN TRAP (tvlDrainReason field): when a pool's TVL is dropping faster than fees decay, the Fee/TVL ratio MECHANICALLY RISES as LPs exit. A "hotter" pool on this metric that also carries a tvlDrainReason is a DYING pool, not an opportunity. Treat any TVL DRAIN ≥30% (MEDIUM) as a strong negative; ≥50% (HIGH) or ≥70% (CRITICAL) should override even attractive APR and age tier.
+
 MINDSET: High risk, high reward DEGEN. But smart degen — APE early, not late. Your goal is to earn fees AND profit from momentum, but timing is everything.
 
 SCORING GUIDANCE:
@@ -168,6 +170,9 @@ function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContex
     ADDRESS: ${p.address}
     score=${a.opportunityScore ?? "?"} | vol=${a.volatility?.level ?? "?"} | trend=${a.trend?.direction ?? "?"} | apr=${p.feeApr}% | tvl=$${p.tvl} | uptrend=${p.uptrend ?? false} (bonus only, NOT required)
     tokenAge=${ageStr}`;
+    if (p.tvlDrainReason) {
+      line += `\n    ⚠️ TVL DRAIN: ${p.tvlDrainReason} [${p.tvlDrainSeverity}] — LPs are exiting, high Fee/TVL here is death not opportunity`;
+    }
     if (p.ta && p.ta.rsi !== null) {
       const rsiLabel = p.ta.rsi > 70 ? "overbought" : p.ta.rsi < 30 ? "oversold" : "neutral";
       const emaDir = p.ta.currentPrice >= p.ta.ema20 ? "above" : "below";

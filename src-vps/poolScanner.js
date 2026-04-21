@@ -1,4 +1,5 @@
 ﻿import { config } from "../config.js";
+import { updateTvlHistory } from "./tvlHistory.js";
 
 const METEORA_API = "https://dlmm.datapi.meteora.ag";
 const DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/pairs/solana";
@@ -121,7 +122,13 @@ export async function fetchPoolStats(address) {
     const data = JSON.parse(text);
     // Meteora datapi wraps single-pool responses inconsistently — handle both
     // { data: {...} } and the bare pool object shapes.
-    return data?.data ?? data ?? null;
+    const poolData = data?.data ?? data ?? null;
+    // Part 18: every healer-side pool stat is another TVL datapoint. Open
+    // positions get ~1-min resolution on drain this way.
+    if (poolData && typeof poolData.tvl === "number") {
+      updateTvlHistory(address, poolData.tvl);
+    }
+    return poolData;
   } catch (err) {
     console.warn(`[fetchPoolStats] ${address.slice(0, 8)} error: ${err.message}`);
     return null;
@@ -219,6 +226,9 @@ export async function scanPools() {
           if (p.address && !seen.has(p.address)) {
             seen.add(p.address);
             allPools.push(p);
+            // Part 18: feed every unique pool's TVL into the drain tracker
+            // so the 1h/3h/6h lookbacks can catch mass-LP-exit patterns.
+            if (typeof p.tvl === "number") updateTvlHistory(p.address, p.tvl);
           }
         }
       }
@@ -334,6 +344,11 @@ export function formatPoolsForLLM(pools) {
     // which the LLM should interpret as "no age signal", not "safe".
     tokenAgeHours: typeof p.ageHours === "number" ? Number(p.ageHours.toFixed(1)) : null,
     tokenAgeTier: p.ageTier ?? "UNKNOWN",
+    // Part 18: TVL drain signal. When non-null, the LLM sees "this pool is
+    // bleeding LPs — a high Fee/TVL here is death, not opportunity".
+    tvlDrainPct: p._tvlDrain?.drainPct != null ? Number(p._tvlDrain.drainPct.toFixed(1)) : null,
+    tvlDrainReason: p._tvlDrain?.reason ?? null,
+    tvlDrainSeverity: p._tvlDrain?.severity ?? null,
     uptrend: p.uptrend ?? false,
     aprScore: p.aprScore?.toFixed(2) ?? "0",
     organicScore: p.organicScore ?? 50,

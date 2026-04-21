@@ -24,6 +24,7 @@ import { getCandles, getTASignal, getTAFromPriceChanges } from "./technicalAnaly
 import { isStrictHours, formatWIB, getWIBHour } from "./timeHelper.js";
 import { isPaused as isCircuitBreakerPaused, getPauseReason as getCircuitBreakerReason } from "./dailyCircuitBreaker.js";
 import { getTokenAgeHours, classifyAgeTier, extractTokenMint } from "./tokenAge.js";
+import { computeTvlDrainPenalty, recordTvlDrainEvent } from "./tvlHistory.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
@@ -147,9 +148,29 @@ function computePreLLMScore(pool, rawPool, poolAnalysis) {
   if (poolMem.adjustment === -999) return { finalScore: -1, reason: `poolMem SKIP: ${poolMem.reason}` };
   let poolMemAdj = 0;
   if (poolMem.adjustment !== 0) poolMemAdj = Math.max(poolMem.adjustment, -20);
-  const combinedAdj = Math.max(poolMemAdj, -40);
+  // Part 18: TVL-drain penalty (worst across 1h/3h/6h lookbacks) — detects
+  // mass LP exit that the Fee/TVL-ratio path misses (ratio rises as TVL
+  // drops faster than fees → "hotter" signal on a dying pool).
+  const drain = computeTvlDrainPenalty(pool.address);
+  const tvlDrainAdj = drain.penalty; // 0, -10, -20, or -30
+  if (tvlDrainAdj < 0) {
+    console.log(`  [TvlDrain] ${pool.name}: ${drain.reason} → penalty ${tvlDrainAdj} (${drain.severity})`);
+    try {
+      recordTvlDrainEvent({
+        poolAddress: pool.address,
+        symbol: pool.name,
+        drainPct: drain.drainPct,
+        lookbackMinutes: drain.lookbackMinutes,
+        referenceTvl: drain.referenceTvl,
+        currentTvl: drain.currentTvl,
+        penalty: tvlDrainAdj,
+        severity: drain.severity,
+      });
+    } catch {}
+  }
+  const combinedAdj = Math.max(poolMemAdj + tvlDrainAdj, -50);
   const finalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
-  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj };
+  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj, tvlDrainAdj, tvlDrain: drain };
 }
 
 async function fetchDexScreenerTrending() {
@@ -677,7 +698,15 @@ export async function runHunter() {
         preFilteredPools.splice(i, 1);
         continue;
       }
+      // Part 18: TVL-drain hard block — ≥70% drain is a dying pool, never
+      // send it to the LLM regardless of other metrics.
+      if (result.tvlDrainAdj <= -30) {
+        console.log(`[Hunter] ⛔ SCORE BLOCK ${pool.name}: critical TVL drain (${result.tvlDrain?.reason})`);
+        preFilteredPools.splice(i, 1);
+        continue;
+      }
       pool._preLLMScore = finalScore;
+      pool._tvlDrain = result.tvlDrain;
     }
     if (preFilteredPools.length === 0) { console.log("⚠️ All pools failed pre-LLM score filter."); return; }
     console.log(`  [Hunter] ${preFilteredPools.length} pool(s) passed pre-LLM score filter`);
@@ -953,11 +982,16 @@ export async function runHunter() {
               // when uptrend is false), but the slot is explicit so the combined floor
               // is applied uniformly and any future downtrend-specific penalty plugs in here.
               const downtrendAdj = 0;
-              let combinedAdj = poolMemAdj + downtrendAdj;
-              if (combinedAdj < -40) combinedAdj = -40;
+              // Part 18: reuse the drain result already computed during
+              // pre-LLM scoring. If it wasn't stashed on the pool (edge
+              // cases), recompute cheaply — the Map lookup is O(1).
+              const drainPost = pool._tvlDrain ?? computeTvlDrainPenalty(pool.address);
+              const tvlDrainAdj = drainPost?.penalty ?? 0;
+              let combinedAdj = poolMemAdj + downtrendAdj + tvlDrainAdj;
+              if (combinedAdj < -50) combinedAdj = -50;
               totalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
 
-              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} final=${totalScore}/100`);
+              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} tvlDrain=${tvlDrainAdj} final=${totalScore}/100`);
 
               // Meme-default override: 10h data showed spot WR 25% avg -6.41%,
               // bidask WR 50% avg +1.28%. When signal is medium (conf 70-79) and
