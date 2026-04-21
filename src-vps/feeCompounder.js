@@ -9,8 +9,39 @@ import { esc } from "./telegramBot.js";
 const require = createRequire(import.meta.url);
 
 const MIN_CLAIM_USD = 8;
+const MIN_FEE_SWAP_USD = 0.5; // below this, Jupiter routes eat the fee — leave for the next close's autoSwap sweep
+const CLAIM_SETTLE_WAIT_MS = 8000; // let the claim TX land + token account update before we read the balance
 const CLAIM_COOLDOWN_MS = 30 * 60 * 1000; // 30 min per position
 const _lastClaimTime = {};
+
+// Read the wallet's current SPL balance for a specific mint. Returns
+// { amountRaw, uiAmount, decimals } or null if the ATA doesn't exist yet.
+async function readWalletTokenBalance(connection, walletPubkey, mintStr) {
+  try {
+    const { PublicKey } = require("@solana/web3.js");
+    const resp = await connection.getParsedTokenAccountsByOwner(
+      walletPubkey,
+      { mint: new PublicKey(mintStr) },
+      { commitment: "confirmed" }
+    );
+    let totalRaw = 0n;
+    let decimals = 0;
+    for (const acc of resp?.value ?? []) {
+      const info = acc.account.data.parsed?.info;
+      const amt = info?.tokenAmount?.amount;
+      decimals = info?.tokenAmount?.decimals ?? decimals;
+      if (amt) totalRaw += BigInt(amt);
+    }
+    if (totalRaw === 0n) return null;
+    return {
+      amountRaw: totalRaw.toString(),
+      uiAmount: Number(totalRaw) / 10 ** decimals,
+      decimals,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export async function checkAndClaimFees(position, notifyFn = null) {
   if (!position?.pool || !position?.positionAddress) return;
@@ -101,13 +132,49 @@ export async function checkAndClaimFees(position, notifyFn = null) {
       console.log(`  📊 Cumulative claimed: $${(prev + totalUsd).toFixed(2)}`);
     } catch {}
 
+    // Post-claim token → SOL swap. Only runs on the non-SOL side and only
+    // when the claimed portion is worth routing (≥ $0.50). Below that, the
+    // Jupiter slippage/priority fees eat more than the swap returns, so we
+    // leave the dust for the next position-close's autoSwap sweep.
+    const tokenMintForSwap = xIsSol ? dlmmPool.tokenY?.publicKey?.toString() : dlmmPool.tokenX?.publicKey?.toString();
+    let swapLine = `Token fees: ~$${tokenFeeUsd.toFixed(2)}`;
+    if (tokenMintForSwap && tokenFeeUsd >= MIN_FEE_SWAP_USD) {
+      // Wait for the claim tx to settle in the token account. Without this
+      // delay the ATA often shows the pre-claim balance.
+      await new Promise(r => setTimeout(r, CLAIM_SETTLE_WAIT_MS));
+      const bal = await readWalletTokenBalance(connection, wallet.publicKey, tokenMintForSwap);
+      if (!bal) {
+        swapLine = `Token fees: ~$${tokenFeeUsd.toFixed(2)} (no wallet balance after claim)`;
+      } else {
+        try {
+          const { swapSplTokenToSol } = await import("./autoSwap.js");
+          const swapResult = await swapSplTokenToSol({
+            mint: tokenMintForSwap,
+            amountRaw: bal.amountRaw,
+            slippageBps: 300,
+            symbol: position.poolName?.split(/[-\/]/)[0] ?? null,
+          });
+          if (swapResult) {
+            swapLine = `Token fees: ~$${tokenFeeUsd.toFixed(2)} → swapped to ${swapResult.outSol.toFixed(5)} SOL`;
+          } else {
+            swapLine = `Token fees: ~$${tokenFeeUsd.toFixed(2)} (swap failed — will retry on next close sweep)`;
+          }
+        } catch (err) {
+          console.warn(`  [FeeSwap] import/call error: ${err.message}`);
+          swapLine = `Token fees: ~$${tokenFeeUsd.toFixed(2)} (swap error)`;
+        }
+      }
+    } else if (tokenMintForSwap && tokenFeeUsd > 0) {
+      swapLine = `Token fees: ~$${tokenFeeUsd.toFixed(2)} (below $${MIN_FEE_SWAP_USD} swap threshold — dust)`;
+    }
+
     // Notify
     if (notifyFn) {
       await notifyFn(
         `💰 <b>Fees Claimed!</b>\n\n` +
         `Pool: ${esc(position.poolName ?? "?")}\n` +
         `SOL fees: ${feeSol.toFixed(4)} SOL ($${solFeeUsd.toFixed(2)})\n` +
-        `Token fees: ~$${tokenFeeUsd.toFixed(2)}\n` +
+        `${swapLine}\n` +
         `Total: <b>$${totalUsd.toFixed(2)}</b>\n` +
         `Momentum: 1h +${priceChange1h.toFixed(1)}%`
       );

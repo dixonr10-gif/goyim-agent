@@ -138,6 +138,44 @@ async function getJupiterQuote(inputMint, amount, slippageBps = 100, outputMint 
   }, "JupQuote");
 }
 
+// Part 17: targeted SPL-token → SOL swap used by feeCompounder right after a
+// fee-claim TX confirms, so the token portion of realized fees lands as SOL
+// instead of accumulating as dust until the next position close sweeps it.
+// Returns { signature, outSol } or null on failure; caller treats null as
+// permissive skip (claim flow must never fail because a tiny swap route
+// didn't exist).
+export async function swapSplTokenToSol({ mint, amountRaw, slippageBps = 300, symbol = null }) {
+  const { VersionedTransaction } = require("@solana/web3.js");
+  if (!mint || mint === WSOL) return null;
+  const amtStr = String(amountRaw ?? "");
+  if (!/^\d+$/.test(amtStr) || BigInt(amtStr) === 0n) return null;
+
+  const wallet = await getWallet();
+  const connection = getConnection();
+  const label = symbol ?? mint.slice(0, 8);
+  try {
+    const quote = await getJupiterQuote(mint, amtStr, slippageBps, WSOL);
+    const outLamports = parseInt(quote.outAmount ?? "0");
+    if (!outLamports) return null;
+    const swapTxBase64 = await buildJupiterSwapTx(quote, wallet.publicKey.toString());
+    const tx = VersionedTransaction.deserialize(Buffer.from(swapTxBase64, "base64"));
+    tx.sign([wallet]);
+    const latestBlockhash = await connection.getLatestBlockhash("confirmed");
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    await connection.confirmTransaction({
+      signature: sig,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    }, "confirmed");
+    const outSol = outLamports / 1e9;
+    console.log(`[FeeSwap] ${label}: swapped ${amtStr} raw → ${outSol.toFixed(6)} SOL tx=${sig}`);
+    return { signature: sig, outSol, outLamports, inAmountRaw: amtStr };
+  } catch (err) {
+    console.warn(`[FeeSwap] ${label} swap failed: ${err.message?.slice(0, 120)}`);
+    return null;
+  }
+}
+
 // Part 16: SOL → USDC swap used by the advanced circuit breaker (profit
 // secure + dump hedge). Lives in autoSwap so it reuses the Jupiter tx-build
 // + signing/confirm plumbing already battle-tested against Token-2022.
