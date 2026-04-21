@@ -621,22 +621,23 @@ export async function runHunter() {
         continue;
       }
     }
-    // Fetch token ages in parallel for the survivors — Helius RPC is the slow
-    // step, so we batch. Permissive: on null (Helius fail), we leave ageHours
-    // undefined and let the LLM treat it as unknown rather than block.
+    // Fetch token ages in parallel for the survivors. Primary source is
+    // DexScreener pairCreatedAt (accurate, unaffected by sniper tx storms);
+    // Helius signature-based age is the fallback. Permissive on total null —
+    // caller's LLM prompt treats ageTier=UNKNOWN as "no signal, not safe".
     await Promise.all(preFilteredPools.map(async (pool) => {
       const mint = extractTokenMint(pool);
       if (!mint) return;
-      const ageHours = await getTokenAgeHours(mint);
-      if (ageHours == null) {
+      const result = await getTokenAgeHours(mint, pool.address);
+      if (!result || result.ageHours == null) {
         console.log(`  [AgeFilter] ${pool.name}: token age unavailable — proceeding (permissive)`);
         return;
       }
-      const tier = classifyAgeTier(ageHours);
-      pool.ageHours = ageHours;
+      const tier = classifyAgeTier(result.ageHours);
+      pool.ageHours = result.ageHours;
       pool.ageTier = tier;
       pool.tokenMint = mint;
-      console.log(`  [AgeFilter] ${pool.name}: ${ageHours.toFixed(1)}h (${tier}) — OHLCV available, proceed`);
+      console.log(`  [AgeFilter] ${pool.name}: ${result.ageHours.toFixed(1)}h (${tier}) via ${result.source} — OHLCV available, proceed`);
     }));
     if (preFilteredPools.length === 0) { console.log("⚠️ All pools failed age filter."); return; }
 
