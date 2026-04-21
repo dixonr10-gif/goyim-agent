@@ -11,6 +11,14 @@ const WSOL = "So11111111111111111111111111111111111111112";
 const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
+// Stablecoin mints to EXCLUDE from the post-close sweep. Without this, the
+// USDC parked by Part 16's profit-secure gets swept back to SOL on the very
+// next position close, silently undoing the hedge. USDT included defensively.
+const STABLE_MINTS = new Set([
+  config.usdcMint,                                // USDC via config (Part 16)
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT mainnet
+]);
+
 const JUP_QUOTE_URL = "https://public.jupiterapi.com/quote";
 const JUP_SWAP_URL  = "https://public.jupiterapi.com/swap";
 
@@ -256,18 +264,26 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
       await new Promise(r => setTimeout(r, 10000));
     }
 
-    const tokens = tokenAccounts
-      .map(acc => {
-        const info = acc.account.data.parsed?.info;
-        return {
-          mint: info?.mint,
-          amount: info?.tokenAmount?.amount,
-          uiAmount: info?.tokenAmount?.uiAmount ?? 0,
-          decimals: info?.tokenAmount?.decimals ?? 0,
-          ata: acc.pubkey.toString(),
-        };
-      })
-      .filter(t => t.mint && t.mint !== WSOL && parseInt(t.amount) > 0);
+    const rawTokens = tokenAccounts.map(acc => {
+      const info = acc.account.data.parsed?.info;
+      return {
+        mint: info?.mint,
+        amount: info?.tokenAmount?.amount,
+        uiAmount: info?.tokenAmount?.uiAmount ?? 0,
+        decimals: info?.tokenAmount?.decimals ?? 0,
+        ata: acc.pubkey.toString(),
+      };
+    });
+    // Log stablecoin balances before filtering so user sees profit-secure state.
+    for (const t of rawTokens) {
+      if (t.mint && STABLE_MINTS.has(t.mint) && parseInt(t.amount) > 0) {
+        console.log(`[AutoSwap] Skip stable: ${t.mint.slice(0, 8)}... (${t.uiAmount}) — preserved for profit-secure`);
+      }
+    }
+    const tokens = rawTokens.filter(t => t.mint
+      && t.mint !== WSOL
+      && !STABLE_MINTS.has(t.mint)
+      && parseInt(t.amount) > 0);
 
     console.log(`💰 Found ${tokens.length} SPL token(s) to check`);
     for (const t of tokens) {
@@ -321,6 +337,12 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
     console.log(`[autoSwap] ${swappable.length} token(s) eligible for swap`);
 
     for (const token of swappable) {
+      // Defense-in-depth: even though the filter above excludes stables, guard
+      // the swap loop too in case a future code path bypasses the filter.
+      if (STABLE_MINTS.has(token.mint)) {
+        console.log(`[AutoSwap] Skip stable in swap loop: ${token.symbol ?? token.mint.slice(0,8)} (${token.uiAmount})`);
+        continue;
+      }
       const mintShort = token.mint.slice(0, 8);
       // Cap at 3 attempts — rug/frozen tokens tend to fail identically at every
       // slippage; 4th tier (1000 bps) historically never rescues one.
