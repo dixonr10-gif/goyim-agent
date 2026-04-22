@@ -109,6 +109,26 @@ function registerCommands() {
     try { await ctx.replyWithHTML(await buildSol24hMessage(), mainMenu()); }
     catch (err) { await ctx.reply(`❌ /sol24h failed: ${err.message}`); }
   });
+  bot.command("weekly", async (ctx) => {
+    try {
+      const txt = (ctx.message?.text ?? "").trim();
+      const m = txt.match(/-(\d+)/);
+      const weeksAgo = m ? Math.max(0, Math.min(12, parseInt(m[1], 10))) : 0;
+      const { getWeeklyPnl } = await import("./pnlHistory.js");
+      const agg = getWeeklyPnl(weeksAgo);
+      await ctx.replyWithHTML(buildWeeklyMessage(agg), mainMenu());
+    } catch (err) { await ctx.reply(`❌ /weekly failed: ${err.message}`); }
+  });
+  bot.command("monthly", async (ctx) => {
+    try {
+      const txt = (ctx.message?.text ?? "").trim();
+      const m = txt.match(/-(\d+)/);
+      const monthsAgo = m ? Math.max(0, Math.min(12, parseInt(m[1], 10))) : 0;
+      const { getMonthlyPnl } = await import("./pnlHistory.js");
+      const agg = getMonthlyPnl(monthsAgo);
+      await ctx.replyWithHTML(buildMonthlyMessage(agg), mainMenu());
+    } catch (err) { await ctx.reply(`❌ /monthly failed: ${err.message}`); }
+  });
   bot.command("closeall", async (ctx) => { await ctx.replyWithHTML(`⚠️ <b>Yakin mau close semua posisi?</b>`, confirmCloseAllMenu()); });
 
   bot.command("wallet", async (ctx) => {
@@ -1335,6 +1355,8 @@ function buildCommandsMessage() {
     `/logs [keyword] — Recent PM2 logs\n\n` +
     `${sep}\n🚨 <b>CIRCUIT BREAKER</b>\n${sep}\n` +
     `/dailypnl — Status breaker + baseline/current\n` +
+    `/weekly [-N] — Weekly PnL (Mon–Sun). -1 = last week\n` +
+    `/monthly [-N] — Monthly PnL + weekly rollup. -1 = last month\n` +
     `/pause — Manual pause Hunter (indefinite)\n` +
     `/resume — Resume (CONFIRM if hedge-paused)\n` +
     `/hedge_status — SOL-dump hedge status\n` +
@@ -1466,6 +1488,84 @@ async function buildSol24hMessage() {
     `<b>Thresholds:</b>\n` +
     `• Warning: ${s.warningPct}%\n` +
     `• Hedge trigger: ${s.triggerPct}%`
+  );
+}
+
+// Part 20: weekly/monthly PnL formatters. HTML because the project uses
+// replyWithHTML everywhere — Telegram renders <code> with monospace which
+// gives us the column alignment the spec asked for.
+function _pnlEmoji(v) {
+  if (v > 50) return "🔥";
+  if (v > 0) return "✅";
+  if (v === 0) return "➖";
+  return "❌";
+}
+function _sign(v) { return v >= 0 ? "+" : ""; }
+function _fmtUsd(v) { return `${_sign(v)}$${Math.abs(v).toFixed(2)}`; }
+function _shortDate(wibDateStr) {
+  // "2026-04-22" → "Apr 22"
+  const [, m, d] = wibDateStr.split("-");
+  const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${names[parseInt(m, 10) - 1]} ${d}`;
+}
+
+function buildWeeklyMessage(agg) {
+  if (agg.empty) {
+    return `📊 <b>WEEKLY PNL — ${agg.periodStart} to ${agg.periodEnd}</b>\n\n<i>No data for ${agg.periodStart} to ${agg.periodEnd}</i>\n\n<i>Snapshots start accumulating at midnight WIB. Wait at least one day after bot install.</i>`;
+  }
+  const lines = [];
+  for (const d of agg.days) {
+    const pct = d.trades_count > 0 ? ` | ${d.trades_count} trades (${d.wins}W/${d.losses}L) | ${d.win_rate}% WR` : " | no trades";
+    lines.push(`<code>${d.day_of_week} ${_shortDate(d.date)}: ${_pnlEmoji(d.pnl_usd)} ${_fmtUsd(d.pnl_usd)}${pct}</code>`);
+  }
+  const best = agg.bestDay, worst = agg.worstDay;
+  return (
+    `📊 <b>WEEKLY PNL — ${agg.periodStart} to ${agg.periodEnd}</b>\n\n` +
+    `<b>Daily Breakdown:</b>\n${lines.join("\n")}\n\n` +
+    `📈 <b>Week Total:</b> ${_fmtUsd(agg.totalPnl)}\n` +
+    `📊 <b>Avg Daily:</b> ${_fmtUsd(agg.avgDailyPnl)}\n` +
+    `🎯 <b>Win Days:</b> ${agg.winDaysCount}/${agg.daysCount} (${agg.dayWinRate}%)\n` +
+    `🔥 <b>Best:</b> ${_shortDate(best.date)} ${_fmtUsd(best.pnl_usd)}\n` +
+    `💀 <b>Worst:</b> ${_shortDate(worst.date)} ${_fmtUsd(worst.pnl_usd)}\n\n` +
+    `📦 <b>Trades:</b> ${agg.totalTrades} | <b>WR:</b> ${agg.tradeWinRate}% | <b>Fees:</b> $${agg.totalFees.toFixed(2)}`
+  );
+}
+
+function buildMonthlyMessage(agg) {
+  if (agg.empty) {
+    return `📊 <b>MONTHLY PNL — ${agg.monthLabel ?? agg.periodStart}</b>\n\n<i>No data for ${agg.periodStart} to ${agg.periodEnd}</i>\n\n<i>Snapshots start at midnight WIB. Monthly view becomes meaningful after ~1 week of data.</i>`;
+  }
+  // Group by week within month: day-of-month 1-7 → Week 1, 8-14 → Week 2, etc.
+  const weekGroups = new Map();
+  for (const d of agg.days) {
+    const dom = parseInt(d.date.split("-")[2], 10);
+    const wk = Math.ceil(dom / 7);
+    const g = weekGroups.get(wk) ?? { pnl: 0, trades: 0, wins: 0, losses: 0, days: 0 };
+    g.pnl += d.pnl_usd ?? 0;
+    g.trades += d.trades_count ?? 0;
+    g.wins += d.wins ?? 0;
+    g.losses += d.losses ?? 0;
+    g.days += 1;
+    weekGroups.set(wk, g);
+  }
+  const weekLines = [];
+  for (const [wk, g] of [...weekGroups.entries()].sort((a, b) => a[0] - b[0])) {
+    const wrBase = g.wins + g.losses;
+    const wr = wrBase ? Math.round((g.wins / wrBase) * 100) : 0;
+    weekLines.push(`<code>Week ${wk}: ${_pnlEmoji(g.pnl)} ${_fmtUsd(g.pnl)} | ${g.days}d | ${g.trades} trades ${wr}% WR</code>`);
+  }
+  const best = agg.bestDay, worst = agg.worstDay;
+  return (
+    `📊 <b>MONTHLY PNL — ${agg.monthLabel ?? agg.periodStart}</b>\n` +
+    `<i>(${agg.daysCount} day${agg.daysCount === 1 ? "" : "s"} tracked)</i>\n\n` +
+    `<b>Weekly Summary:</b>\n${weekLines.join("\n")}\n\n` +
+    `📈 <b>Month Total:</b> ${_fmtUsd(agg.totalPnl)}\n` +
+    `📊 <b>Avg Daily:</b> ${_fmtUsd(agg.avgDailyPnl)}\n` +
+    `🎯 <b>Win Days:</b> ${agg.winDaysCount}/${agg.daysCount} (${agg.dayWinRate}%)\n` +
+    `🔥 <b>Best Day:</b> ${_shortDate(best.date)} ${_fmtUsd(best.pnl_usd)}\n` +
+    `💀 <b>Worst Day:</b> ${_shortDate(worst.date)} ${_fmtUsd(worst.pnl_usd)}\n\n` +
+    `📦 <b>Trades:</b> ${agg.totalTrades} | <b>WR:</b> ${agg.tradeWinRate}%\n` +
+    `💸 <b>Fees:</b> $${agg.totalFees.toFixed(2)} | <b>Avg/Trade:</b> ${_fmtUsd(agg.avgPnlPerTrade)}`
   );
 }
 

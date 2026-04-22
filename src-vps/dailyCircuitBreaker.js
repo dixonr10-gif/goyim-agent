@@ -148,6 +148,18 @@ export async function resetDaily({ silent = false } = {}) {
   const { price: solPrice, ok: priceOk } = await safeSolPrice(prevPrice);
   const baselineUsd = portfolio.totalSol * solPrice;
 
+  // Part 20: snapshot the closing day's state into daily_pnl_history before
+  // we overwrite _state with fresh baseline. Non-blocking — a snapshot error
+  // must never prevent the reset.
+  if (_state && _state.date) {
+    try {
+      const { snapshotDailyPnl } = await import("./pnlHistory.js");
+      await snapshotDailyPnl(_state);
+    } catch (err) {
+      console.warn(`[CircuitBreaker] pnl-history snapshot failed: ${err.message}`);
+    }
+  }
+
   _state = buildResetState({ portfolio, solPrice, baselineUsd, carryPause: false });
   save(_state);
 
