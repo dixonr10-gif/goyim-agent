@@ -27,6 +27,23 @@ async function fetchWithRetry(body, retries = 3) {
   throw new Error("LLM returned empty response after retries");
 }
 
+// Generic chat call for ad-hoc LLM decisions (Part 19 smart rebalance, etc.)
+// Thin wrapper over fetchWithRetry — returns raw text so callers parse their
+// own response shape. Defaults to smart-tier model; pass modelKey "fast" to
+// use haiku-4.5 instead.
+export async function callLLMChat({ system, user, modelKey = "smart", temperature = 0.2, maxTokens = 400 } = {}) {
+  const model = modelKey === "fast" ? config.openRouterModelFast : config.openRouterModelSmart;
+  return await fetchWithRetry({
+    model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    temperature,
+    max_tokens: maxTokens,
+  });
+}
+
 export async function agentDecide({ pools, poolAnalyses = [], openPositions, tradeMemoryContext = "", lessonsContext = "", patternsContext = "", brainContext = "" }) {
   const systemPrompt = buildSystemPrompt(brainContext);
   const userPrompt = buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContext, lessonsContext, patternsContext });

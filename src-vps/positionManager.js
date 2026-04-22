@@ -1084,6 +1084,61 @@ export async function processPendingReopens() {
       }
     } catch {}
 
+    // Part 19 Smart Rebalance: before re-entry, evaluate ENTER / WAIT / SKIP
+    // based on current pool state (drain, pattern, RSI, fee APR, age tier).
+    // WAIT keeps the entry in the queue with retryCount + lastEvaluatedAt.
+    // SKIP removes it silently (event logged). ENTER proceeds with the
+    // existing re-open flow below.
+    const retryCount = entry.retryCount ?? 0;
+    const lastEvaluatedAt = entry.lastEvaluatedAt ?? 0;
+    {
+      const { REBALANCE_CONFIG } = await import("./rebalanceAnalyzer.js");
+      const waitAge = Date.now() - lastEvaluatedAt;
+      if (lastEvaluatedAt && waitAge < REBALANCE_CONFIG.WAIT_TIMEOUT_MS) {
+        const remMin = Math.ceil((REBALANCE_CONFIG.WAIT_TIMEOUT_MS - waitAge) / 60000);
+        console.log(`  [SmartRebalance] ${entry.poolName ?? entry.pool?.slice(0,8)}: WAIT timer ${remMin}m left (retry ${retryCount}/${REBALANCE_CONFIG.MAX_RETRIES})`);
+        continue;
+      }
+    }
+    try {
+      const { analyzeRebalance, recordRebalanceDecision } = await import("./rebalanceAnalyzer.js");
+      const decision = await analyzeRebalance(entry, retryCount);
+      const label = entry.poolName ?? entry.pool?.slice(0,8);
+      console.log(`  [SmartRebalance] ${label}: ${decision.action} (conf ${decision.confidence}${decision.llmCalled ? "" : ` ${decision.fastPath ?? "fast"}`}) — ${decision.rationale}`);
+
+      if (decision.action === "WAIT") {
+        // Keep in queue, bump retry, stamp lastEvaluatedAt for the 10-min gate.
+        const fresh = loadPendingReopens();
+        if (fresh[key]) {
+          fresh[key] = {
+            ...fresh[key],
+            retryCount: retryCount + 1,
+            lastEvaluatedAt: Date.now(),
+            lastDecision: { action: decision.action, rationale: decision.rationale, at: new Date().toISOString() },
+          };
+          savePendingReopens(fresh);
+        }
+        try { recordRebalanceDecision(entry, decision, "DEFERRED"); } catch {}
+        continue;
+      }
+      if (decision.action === "SKIP") {
+        const fresh = loadPendingReopens();
+        delete fresh[key];
+        savePendingReopens(fresh);
+        try { recordRebalanceDecision(entry, decision, "ABORTED"); } catch {}
+        try {
+          const { notifyMessage } = await import("./telegramBot.js");
+          await notifyMessage(`🚫 Rebalance SKIP\nPool: ${label}\nReason: ${decision.rationale}`);
+        } catch {}
+        continue;
+      }
+      // ENTER: proceed with existing re-open flow. Stash the decision on the
+      // entry for the EXECUTED event record emitted below.
+      entry.lastDecision = decision;
+    } catch (err) {
+      console.warn(`  [SmartRebalance] analyzer error for ${entry.poolName ?? entry.pool?.slice(0,8)}: ${err.message} — falling through to re-open (permissive)`);
+    }
+
     // Wait elapsed — remove entry FIRST so a concurrent healer tick can't
     // double-trigger, then attempt the re-open. On failure we DO NOT re-add
     // the entry (would loop forever); we notify and let the user intervene.
@@ -1126,6 +1181,10 @@ export async function processPendingReopens() {
         });
       } catch (e) { console.warn(`  [PendingReopen] recordTradeOpen failed: ${e.message}`); }
       console.log(`  ✅ [PendingReopen] re-opened ${entry.oldPositionId} → ${newPosId}`);
+      try {
+        const { recordRebalanceDecision } = await import("./rebalanceAnalyzer.js");
+        recordRebalanceDecision(entry, entry.lastDecision ?? { action: "ENTER", rationale: "legacy path", confidence: 50, llmCalled: false }, "EXECUTED");
+      } catch {}
       try {
         const { notifyMessage } = await import("./telegramBot.js");
         await notifyMessage(`🔁 Rebalance re-open\nPool: ${entry.poolName ?? entry.pool?.slice(0,8)}\nNew pos: ${newPosId}`);
