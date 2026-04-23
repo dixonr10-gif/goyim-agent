@@ -221,9 +221,7 @@ ${lessonsContext || "No lessons yet"}
 === PATTERNS ===
 ${patternsContext || "No patterns yet"}
 
-INSTRUCTION: You are a DEGEN. If high APR pools available, APE IN.
-uptrend=false does NOT mean skip — it just means volume isn't accelerating right now. APR and score matter more.
-When action is "open", copy the ADDRESS field EXACTLY into targetPool.
+INSTRUCTION: When action is "open", copy the ADDRESS field EXACTLY into targetPool.
 Example: if pool shows "ADDRESS: 87ESAEYJKYpARBUeUioNjgadn9K4KhzoqJ95oN53oYkJ", then targetPool = "87ESAEYJKYpARBUeUioNjgadn9K4KhzoqJ95oN53oYkJ"
 
 Respond ONLY with valid JSON.`;
