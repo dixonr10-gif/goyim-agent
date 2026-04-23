@@ -1,0 +1,69 @@
+{
+  "bestConditions": [
+    "Hold time 0.0-1.2 hours (quick exits correlate with +2.8% avg wins vs -8.1% avg losses on longer holds)",
+    "Confidence 75-82 + oppScore 80-90 + organicScore >= 65 + bidask strategy (avg +4.41% wins: XRP +6.05%, SOULANA +7.82%, MIM-first +7.47%, wif2 +9.51%, ASTROID +5.07%)",
+    "Confidence 78-85 with oppScore 85+ AND organicScore >= 60 (win rate 58% vs 42% overall — organic filter matters)",
+    "Strategy: bid-ask with confidence 78+ (57% win rate vs 45% spot overall)",
+    "Pool reputation: ROCKET-SOL, milkers-SOL, BURNIE-SOL show 52-55% win rates",
+    "Exit via TRAILING_TP is the dominant winner path (40% of conf 75-82 winners exited this way, vs 2% of losers) — set TTP early, trust it"
+  ],
+  "worstConditions": [
+    "Confidence 75-82 + oppScore 80-90 + organicScore < 50 on unfamiliar pools (true catastrophic zone — losers avg organicScore 43.7 vs winners 62.6)",
+    "APR > 500% on conf 75-82 entries = likely rugpull/ponzi — pumphouse 1529% (-11%), BELIEF 1391% (-11%), Goku 6725% (-7%). Hard block.",
+    "Re-entering same pool within 24h of a winning trade (MIM-SOL pattern: +7.47% then -42.53% within 19h — second trade chases expired momentum)",
+    "Confidence 75-82 + SPOT strategy + null poolFeeApr/organicScore (catastrophic skew: 40 spot losers vs 25 spot winners; null-rate 51% losers vs 33% winners)",
+    "Confidence 85+ with oppScore 90+ on unfamiliar pools (CLAWD-SOL: -29.6%, -41.9%; Time-SOL: -32.6%)",
+    "Unknown pools with null confidence/oppScore but holdH=0.0 show extreme variance (-63.6%, -31.9%, -31.7% losses mixed with +67.8%, +46.5% wins)",
+    "New/low-liquidity pools (YOLO-SOL: -24.9%, Wcoin-SOL: -17.2%, GENZ-SOL early trades: -31%, -23%)"
+  ],
+  "bestStrategy": {
+    "name": "bid-ask",
+    "whyItWorks": "Bid-ask trades with confidence 78+ show 57% win rate vs 45% spot. Bid-ask excels at capturing tight spreads on established pools (milkers-SOL, XRP-SOL, PEACE-SOL). Spot strategy suffers from entry timing uncertainty on volatile tokens.",
+    "idealVolatility": "low"
+  },
+  "optimalHoldHours": {
+    "min": 0,
+    "max": 1.2,
+    "reasoning": "Trades held 0.0-1.2 hours average +2.8% (wins). Trades held 1.5-3.0 hours average -2.1% (losses). Sweet spot is sub-1.2h exits—captures momentum before reversal. Longer holds expose to overnight/macro volatility on illiquid DLMM pools."
+  },
+  "winningEntrySignals": [
+    "Confidence 78-85 + oppScore 85-90 on established pools (ROCKET, milkers, BURNIE, NEU, GENZ, Tortellini)",
+    "Bid-ask strategy entry (57% win rate vs 45% spot)",
+    "Confidence 70 with null oppScore (intuitive quick trades: 56% win rate, avg +3.2%)",
+    "Hold duration <1.2 hours planned at entry",
+    "Pool has 5+ prior trades with >50% win rate in history"
+  ],
+  "losingEntryMistakes": [
+    "High confidence (85+) + high oppScore (90+) on NEW/UNFAMILIAR pools (CLAWD, Time, Yoshi, Freg, 44-SOL early trades)",
+    "Holding 0.2-0.8 hours on high-confidence entries—this is the 'false breakout' zone where reversals hit hardest",
+    "Entering bid-ask with confidence 75-80 (lower than optimal threshold)",
+    "Null confidence/oppScore with holdH=0.0 (data quality issue—agent trading blind, extreme variance)",
+    "Confidence 70 with null oppScore on UNFAMILIAR pools (vs. confidence 70 on known pools which wins 56%)"
+  ],
+  "poolCharacteristics": {
+    "preferHighVolume": true,
+    "preferHighFeeApr": false,
+    "volumeThreshold": 5,
+    "feeAprThreshold": null,
+    "reasoning": "Pools with 5+ prior trades in history show 52-55% win rates. New pools (1-2 trades) show 38% win rate. Fee APR data unavailable, but established pools (ROCKET, milkers, BURNIE, NEU, GENZ, Tortellini, unc-SOL, DUMBMONEY-SOL) consistently outperform. Avoid: Yoshi, Freg, 44-SOL, stonks, Time, CLAWD, GENZ early, Wcoin, YOLO, BELIEF early trades."
+  },
+  "confidenceCalibration": "Agent is OVERCONFIDENT at 85+ on new pools. Confidence 85+ on unfamiliar tokens (CLAWD, Time, Yoshi) produces -29% to -50% losses. Sweet spot: confidence 78-85 on KNOWN pools, OR confidence 70 with null oppScore (intuitive quick trades). The agent's confidence is well-calibrated at 78-82 range but breaks down at 85+ without pool history. Recommendation: cap confidence at 82 for new pools, allow 85+ only after 5+ successful trades on that pool.",
+  "topInsight": "HOLD TIME is the dominant predictor. Trades exiting at 0.0-1.2 hours average +2.8% (wins). Trades held 0.2-0.8 hours with high confidence (75-85) on unfamiliar pools trigger catastrophic -15% to -50% losses (Yoshi, Freg, 44-SOL, stonks, Time, CLAWD). The agent enters high-conviction trades on new pools, holds through the first reversal (0.2-0.8h window), and gets stopped out hard. Solution: implement aggressive 0.5-1.0h stop-loss on new pools, or reduce confidence threshold for new pools to 65-70.",
+  "suggestedRuleChanges": [
+    "Add rule: IF pool has <5 prior trades AND confidence >= 85, REDUCE confidence to 72 and set hard stop-loss at -3% (not -5%)",
+    "Add rule: IF holdH planned > 1.5 hours, REDUCE opportunityScore by 10 points (long holds on DLMM are toxic)",
+    "Add rule: PREFER bid-ask strategy when confidence 78-85 (57% win rate vs 45% spot)",
+    "Add rule: IF confidence 70 AND oppScore null, ALLOW trade (intuitive quick trades win 56%); these are your best performers",
+    "Add rule: BLOCK trades on pools with <3 prior trades in last 7 days (Yoshi, Freg, 44-SOL, stonks, Time, CLAWD all new/illiquid)",
+    "Add rule: IF confidence >= 85 AND pool is new, set mandatory exit at +2% or -2% (don't let conviction override risk on unknowns)",
+    "Calibrate: confidence 78-82 is your optimal range (58% win rate); 85+ only on pools with 10+ successful prior trades",
+    "Add rule: IF pool had winning trade within last 24h, BLOCK re-entry to same pool for 24h cooldown (MIM-pattern: momentum doesn't repeat on <$10K TVL pools)",
+    "Add rule: IF poolFeeApr > 500%, HARD BLOCK — these are ponzi/rugpull APRs (pumphouse 1529%, BELIEF 1391%, Goku 6725% all lost 7-11%)",
+    "Add rule: IF null(organicScore) OR null(poolFeeApr), reduce confidence by 10 points — data-poor entries lose at 45% null-rate vs 26% for winners"
+  ],
+  "learnedAt": "2026-04-23T15:44:37+07:00",
+  "learnedAtTradeCount": 429,
+  "tradesSampled": 429,
+  "manuallyTunedAt": "2026-04-23T15:44:37+07:00",
+  "tuningRationale": "Part 23: Forensic analysis of 429-trade dataset revealed conf 75-82 rule was over-fitted. Winners (42) in same zone differentiated by organicScore (62.6 vs 43.7 losers). Rules rewritten specifically without restarting auto-learning pipeline (postTradeAnalyzer intentionally disabled per brain-paralysis prevention policy). MIM-SOL pattern isolated: same-pool re-entry within 24h of a win is the failure mode. APR > 500% flagged as rugpull signal."
+}
