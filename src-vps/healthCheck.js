@@ -45,9 +45,11 @@ export async function runHealthCheck(notifyFn) {
 
     if (hunterLast) {
       const minAgo = (Date.now() - hunterLast.getTime()) / 60_000;
-      const hunterThreshold = isStrictHours() ? HUNTER_STALE_MINUTES_STRICT : HUNTER_STALE_MINUTES_NORMAL;
+      const strict = isStrictHours();
+      const hunterThreshold = strict ? HUNTER_STALE_MINUTES_STRICT : HUNTER_STALE_MINUTES_NORMAL;
+      const modeLabel = strict ? "strict" : "normal";
       if (minAgo > hunterThreshold) {
-        issues.push(`Hunter last run: ${minAgo.toFixed(0)}m ago (STALE, threshold ${hunterThreshold}m ${isStrictHours() ? "strict" : "normal"})`);
+        issues.push(`Hunter last run ${minAgo.toFixed(0)}m ago (STALE, ${minAgo.toFixed(0)}m vs ${hunterThreshold}m ${modeLabel} threshold)`);
       }
     }
   } catch {

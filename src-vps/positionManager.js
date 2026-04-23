@@ -218,6 +218,7 @@ export async function checkWalletBalance() {
 // 2–3× the fee in non-refundable rent. Permissive on any simulation failure
 // so RPC flakes never block the bot.
 const BIN_ARRAY_SKIP_FILE = path.resolve("data/bin_array_skips.json");
+const REALLOC_CAP_SKIP_FILE = path.resolve("data/realloc_cap_skips.json");
 
 async function checkBinArrayInitCost(connection, transaction, signers = []) {
   try {
@@ -273,6 +274,20 @@ function recordBinArraySkip(entry) {
     fs.writeFileSync(BIN_ARRAY_SKIP_FILE, JSON.stringify(log.slice(-500), null, 2));
   } catch (err) {
     console.warn(`[BinArrayGuard] skip-log write failed: ${err.message}`);
+  }
+}
+
+function recordReallocCapSkip(entry) {
+  try {
+    let log = [];
+    if (fs.existsSync(REALLOC_CAP_SKIP_FILE)) {
+      try { log = JSON.parse(fs.readFileSync(REALLOC_CAP_SKIP_FILE, "utf-8")); } catch {}
+      if (!Array.isArray(log)) log = [];
+    }
+    log.push(entry);
+    fs.writeFileSync(REALLOC_CAP_SKIP_FILE, JSON.stringify(log.slice(-500), null, 2));
+  } catch (err) {
+    console.warn(`[ReallocCap] skip-log write failed: ${err.message}`);
   }
 }
 
@@ -433,6 +448,21 @@ export async function openPosition(decision) {
           slippage = 4;
           console.log(`[Position] Retry with higher slippage tolerance (${slippage}%)`);
           continue;
+        }
+        // InvalidRealloc: Meteora DLMM SDK simulates InitializePosition; when the
+        // pool needs fresh bin-array accounts the CPI realloc exceeds Solana's
+        // 10240-byte per-instruction cap. Not retryable; skip cleanly and let
+        // caller treat as filter rejection (null return).
+        if (/InvalidRealloc/i.test(msgParts) || /realloc.*limited to 10240/i.test(msgParts)) {
+          const poolTag = poolName ?? `${targetPool.slice(0, 8)}...`;
+          console.warn(`[ReallocCap] ${poolTag}: CPI realloc cap hit — skipping (fresh bin arrays exceed 10KB)`);
+          recordReallocCapSkip({
+            timestamp: new Date().toISOString(),
+            pool: targetPool,
+            tokenSymbol: altTokenSymbol ?? null,
+            poolName: poolName ?? null,
+          });
+          return null;
         }
         throw err;
       }

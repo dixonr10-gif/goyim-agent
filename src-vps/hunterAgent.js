@@ -1086,6 +1086,10 @@ export async function runHunter() {
               config.maxSolPerPosition = dynamicSol;
               const posId = await openPosition(decision);
               config.maxSolPerPosition = origMax;
+              if (!posId) {
+                // openPosition returns null for non-retryable skips (e.g. InvalidRealloc CPI cap)
+                console.log(`  [Hunter] openPosition skipped ${pool.name} (non-retryable reject, see warning above)`);
+              } else {
               const newPos = getOpenPositions().find(p => p.id === posId);
               recordTradeOpen({
                 positionId: posId,
@@ -1104,6 +1108,7 @@ export async function runHunter() {
               });
               recordPoolDeploy(decision.targetPool, { poolName: pool.name, strategy: decision.strategy, solDeployed: dynamicSol });
               if (newPos) { hunterOpenedPosition = true; await notifyPositionOpened(newPos, decision); }
+              }
             } catch (err) {
               config.maxSolPerPosition = origMax;
               const msg = err.message ?? "unknown error";
