@@ -65,7 +65,8 @@ export function computeTvlDrainPct(poolAddress, lookbackMinutes = 60) {
 }
 
 // Worst-case drain across 1h/3h/6h windows → tiered penalty.
-// Tiers match spec: ≥70% → -30 CRITICAL, ≥50% → -20 HIGH, ≥30% → -10 MEDIUM.
+// Part 24 Edit 5 (Option B, loosened): ≥70% -30 CRITICAL (hard block),
+// 60-69% -20 HIGH, 50-59% -10 MEDIUM, <50% no penalty.
 export function computeTvlDrainPenalty(poolAddress) {
   const windows = [60, 180, 360];
   let worst = null;
@@ -79,8 +80,8 @@ export function computeTvlDrainPenalty(poolAddress) {
   const formatted = `TVL drain ${drainPct.toFixed(0)}% in ${lookbackMinutes}min ($${Math.round(referenceTvl)}→$${Math.round(currentTvl)})`;
 
   if (drainPct >= 70) return { penalty: -30, reason: `TVL collapsed ${drainPct.toFixed(0)}% in ${lookbackMinutes}min ($${Math.round(referenceTvl)}→$${Math.round(currentTvl)})`, severity: "CRITICAL", drainPct, referenceTvl, currentTvl, lookbackMinutes };
-  if (drainPct >= 50) return { penalty: -20, reason: formatted, severity: "HIGH", drainPct, referenceTvl, currentTvl, lookbackMinutes };
-  if (drainPct >= 30) return { penalty: -10, reason: formatted, severity: "MEDIUM", drainPct, referenceTvl, currentTvl, lookbackMinutes };
+  if (drainPct >= 60) return { penalty: -20, reason: formatted, severity: "HIGH", drainPct, referenceTvl, currentTvl, lookbackMinutes };
+  if (drainPct >= 50) return { penalty: -10, reason: formatted, severity: "MEDIUM", drainPct, referenceTvl, currentTvl, lookbackMinutes };
   return { penalty: 0, reason: null, severity: null, drainPct };
 }
 
