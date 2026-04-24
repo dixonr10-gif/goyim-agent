@@ -285,86 +285,22 @@ async function buildTradingContext() {
   return context;
 }
 
-function buildReviewContext() {
-  const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-
-  let ctx = "=== FULL DATA FOR DAILY REVIEW ===\n";
-  ctx += `Tanggal & Waktu Review: ${getCurrentDateTimeStr()}\n`;
-  ctx += `Wallet: 8uGZkrvfRJZWFVYXCCFc9WnGGU13McrWNwiU26QCWk4U\n\n`;
-
-  // Open positions
-  try {
-    const posArr = getOpenPositions();
-    ctx += `=== OPEN POSITIONS (${posArr.length}) ===\n`;
-    if (posArr.length === 0) {
-      ctx += "Tidak ada posisi aktif.\n";
-    } else {
-      posArr.forEach(p => {
-        const holdH = p.openedAt ? ((Date.now() - new Date(p.openedAt).getTime()) / 3_600_000).toFixed(1) : "?";
-        ctx += `  ${p.id}: Pool=${p.pool?.slice(0,8)}... | SOL=${p.solDeployed} | hold=${holdH}h | lastPnL=${p.lastPnlPct !== undefined ? p.lastPnlPct+"%" : "N/A"}\n`;
-      });
-    }
-  } catch(e) { ctx += `Open positions error: ${e.message}\n`; }
-
-  // Trade stats + today's trades
-  try {
-    const d = getFullStats();
-    const stats = d?.stats ?? {};
-    const allTrades = d?.trades ?? [];
-    const todayTrades = allTrades.filter(t => t.closedAt && new Date(t.closedAt) >= todayStart);
-
-    ctx += `\n=== TRADE STATS ===\n`;
-    ctx += `Total trades: ${stats.totalTrades ?? 0} | Win rate: ${stats.hitRate ?? 0}% | PnL: ${stats.totalPnlSol ?? 0} SOL\n`;
-    ctx += `Avg win: ${stats.avgWinSol ?? 0} SOL | Avg loss: ${stats.avgLossSol ?? 0} SOL\n`;
-
-    ctx += `\n=== TRADES TODAY (${todayTrades.length}) ===\n`;
-    if (todayTrades.length === 0) {
-      ctx += "Tidak ada trade yang ditutup hari ini.\n";
-    } else {
-      todayTrades.forEach(t => {
-        ctx += `  ${t.id}: PnL=${t.pnlPercent?.toFixed(1)}% | ${t.closeReason ?? "closed"} | hold=${t.holdHours?.toFixed(1)}h\n`;
-      });
-    }
-
-    const recent = allTrades.filter(t => t.closedAt).slice(-5);
-    if (recent.length > 0) {
-      ctx += `\n=== 5 LAST CLOSED TRADES ===\n`;
-      recent.forEach(t => {
-        ctx += `  ${t.id}: PnL=${t.pnlPercent?.toFixed(1)}% | reason=${t.closeReason ?? "closed"} | ${t.closedAt?.slice(0,10)}\n`;
-      });
-    }
-  } catch(e) { ctx += `Trade stats error: ${e.message}\n`; }
-
-  return ctx;
-}
-
 export async function chatWithGoyim(userId, userMessage, imageBase64 = null) {
   console.log("[CHAT] Incoming:", userMessage);
   const history = getHistory(userId);
   history.push({ role: "user", content: userMessage });
 
-  const isReviewRequest = /daily.?review|\/review|rekap.?hari|review.?trade|laporan.?harian/i.test(userMessage);
-
-  let tradingContext;
-  let userPrompt = userMessage;
-  if (isReviewRequest) {
-    tradingContext = buildReviewContext();
-    userPrompt = `${userMessage}\n\nBerikan daily review lengkap berdasarkan data di atas. Harus mencakup: (1) posisi aktif + PnL, (2) trade hari ini, (3) win/loss rate keseluruhan, (4) rekomendasi untuk besok, (5) vibe/lesson.`;
-  } else {
-    tradingContext = await buildTradingContext();
-  }
+  const tradingContext = await buildTradingContext();
 
   const data = await fetchWithRetry({
     model: config.openRouterModelFast,
     messages: [
       { role: "system", content: `${GOYIM_PERSONA}\n\n${tradingContext}` },
       ...history.slice(0, -1),
-      { role: "user", content: userPrompt },
+      { role: "user", content: userMessage },
     ],
     temperature: 0.8,
-    max_tokens: isReviewRequest ? 600 : 400,
+    max_tokens: 400,
   });
 
   const rawReply = data?.choices?.[0]?.message?.content ?? "Server lagi down bro, coba lagi bentar.";
@@ -374,35 +310,6 @@ export async function chatWithGoyim(userId, userMessage, imageBase64 = null) {
   saveHistory(userId, history);
   return reply;
 }
-
-export async function generateDailyReview() {
-  const reviewContext = buildReviewContext();
-
-  const prompt = `Tulis daily trading review berdasarkan data di atas.
-Format:
-📊 **DAILY REVIEW** — [tanggal hari ini]
-💼 Posisi aktif: [list + PnL]
-📈 Trade hari ini: [ringkasan]
-🏆 Win rate: X% | Total PnL: X SOL
-💡 Lesson: [1 insight penting]
-🔮 Plan besok: [rekomendasi konkret]
-🔥 Vibe: [1 kalimat jujur]
-
-Gunakan bahasa Indonesia + trading slang. Max 250 kata.`;
-
-  const data = await fetchWithRetry({
-    model: config.openRouterModelFast,
-    messages: [
-      { role: "system", content: `${GOYIM_PERSONA}\n\n${reviewContext}` },
-      { role: "user", content: prompt },
-    ],
-    temperature: 0.9,
-    max_tokens: 500,
-  });
-
-  return sanitizeResponse(data?.choices?.[0]?.message?.content ?? "Review gagal, server down.");
-}
-
 
 export async function chatWithGoyimVision(userId, caption, imageBase64) {
   console.log(`[VISION] Processing image... (${Math.round(imageBase64.length / 1024)}KB base64)`);

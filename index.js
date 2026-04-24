@@ -3,7 +3,6 @@
 
 import fs from "fs";
 import { config } from "./config.js";
-import { startDailyReviewScheduler } from "./src/reviewScheduler.js";
 import { startFeeCompounder } from "./src/feeCompounder.js";
 import { runHunter } from "./src/hunterAgent.js";
 import { runHealer } from "./src/healerAgent.js";
@@ -24,7 +23,6 @@ console.log(`   Max pos:  ${config.maxOpenPositions}`);
 console.log("");
 
 const tgBot = initTelegramBot();
-startDailyReviewScheduler(tgBot, config.telegramChatId);
 startDailyPnLReport(tgBot, config.telegramChatId);
 
 // ── Daily circuit breaker: init state + schedule 6h WIB-aligned checks ────────

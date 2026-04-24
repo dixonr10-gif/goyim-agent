@@ -153,15 +153,6 @@ function registerCommands() {
     await ctx.replyWithHTML(await buildPositionsMessage(positions), positionsMenu(positions));
   });
 
-  bot.command("review", async (ctx) => {
-    await ctx.reply("📊 Lagi nulis daily review, bentar...");
-    try {
-      const { generateDailyReview } = await import("./goyimChat.js");
-      const review = await generateDailyReview();
-      await ctx.replyWithHTML(`<b>📋 Daily Review</b>\n\n${esc(review)}`, mainMenu());
-    } catch (err) { await ctx.reply(`❌ ${err.message}`); }
-  });
-
   bot.command("evolve", async (ctx) => {
     await ctx.reply("🧬 Running threshold evolution...");
     try {
@@ -730,15 +721,6 @@ function registerCallbacks() {
     const positions = getOpenPositions();
     if (positions.length === 0) { await ctx.editMessageText("📭 Gak ada posisi aktif.", { ...mainMenu() }); return; }
     await ctx.editMessageText(await buildPositionsMessage(positions), { parse_mode: "HTML", ...positionsMenu(positions) });
-  });
-  bot.action("review", async (ctx) => {
-    await ctx.answerCbQuery("📊 Generating...");
-    try {
-      await ctx.editMessageText("📊 Lagi nulis daily review...");
-      const { generateDailyReview } = await import("./goyimChat.js");
-      const review = await generateDailyReview();
-      await ctx.editMessageText(`<b>📋 Daily Review</b>\n\n${esc(review)}`, { parse_mode: "HTML", ...mainMenu() });
-    } catch (err) { await ctx.editMessageText(`❌ ${err.message}`, { ...mainMenu() }); }
   });
   bot.action("pause", async (ctx) => {
     agentPaused = true;
@@ -1350,7 +1332,6 @@ function buildCommandsMessage() {
     `/history — Trade history + stats\n` +
     `/winrate — Win rate statistics\n` +
     `/pnl — PnL summary\n` +
-    `/review — Daily review (LLM-generated)\n` +
     `/lessons — Lessons dari trade memory\n` +
     `/logs [keyword] — Recent PM2 logs\n\n` +
     `${sep}\n🚨 <b>CIRCUIT BREAKER</b>\n${sep}\n` +
@@ -1599,8 +1580,7 @@ function mainMenu() {
     [Markup.button.callback("📊 Status", "status"), Markup.button.callback("📋 Positions", "positions")],
     [Markup.button.callback("👛 Wallet", "wallet"), Markup.button.callback("🏆 Win Rate", "winrate")],
     [Markup.button.callback("📊 Daily PnL", "daily_pnl"), Markup.button.callback("📜 History", "history")],
-    [Markup.button.callback("📋 Daily Review", "review"), Markup.button.callback("📚 Lessons", "lessons")],
-    [Markup.button.callback("🔄 Refresh", "refresh")],
+    [Markup.button.callback("📚 Lessons", "lessons"), Markup.button.callback("🔄 Refresh", "refresh")],
     [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("👀 Watchlist", "btn_watchlist")],
     [Markup.button.callback("⏳ Cooldown", "btn_cooldown"), Markup.button.callback("📋 Logs", "btn_logs")],
     [Markup.button.callback("🔄 Restart", "pm2_restart"), Markup.button.callback("⚙️ PM2 Status", "pm2_status")],
