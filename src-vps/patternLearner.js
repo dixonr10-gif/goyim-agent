@@ -1,6 +1,28 @@
 // src/patternLearner.js
 // Analisa batch trade history → temukan pola yang konsisten profit/loss
 // Dijalankan setiap N trade atau setiap hari
+//
+// ⚠️ AUTO-LEARNING DISABLED 2026-04-25
+//
+// The WRITE chain (savePatterns / learnPatterns / maybeLearnPatterns) is
+// intentionally NOT called from anywhere in the codebase. The trigger at
+// hunterAgent.js:362 has been commented out by Dixon to prevent auto-
+// overwriting manual patterns.json tuning.
+//
+// The READ path (getPatternsForLLM) IS still used at hunterAgent.js:754 to
+// inject the manually tuned patterns.json content into the LLM system prompt.
+// KEEP THIS WORKING.
+//
+// patterns.json must only be edited MANUALLY + surgically + reviewed.
+// NEVER restart auto-learning without Dixon's explicit approval.
+//
+// Memory directive (Goyim Agent project policy):
+//   "postTradeAnalyzer + selfImprovingPrompt.js + agent_brain.json
+//    INTENTIONALLY REMOVED (not broken). Reason: caused brain paralysis —
+//    auto-evolved thresholds too aggressively, eventually impossible scores.
+//    NEVER restart auto-learning pipeline."
+//
+//   patternLearner.js falls under same category — same risk, same rule.
 
 import fetch from "node-fetch";
 import fs from "fs";

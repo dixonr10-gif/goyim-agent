@@ -359,7 +359,14 @@ export async function runHunter() {
     // due to brain-paralysis bug where evolved oppScore thresholds rejected
     // valid candidates).
     const { stats, trades: allTrades } = getFullStats();
-    await maybeLearnPatterns(allTrades);
+    // DISABLED 2026-04-25 by Dixon — auto-learning pipeline overwrites manual
+    // patterns.json tuning (brain paralysis prevention). The auto-fire on
+    // 2026-04-24 wiped the Part 23 manual rules (organicScore differentiator,
+    // MIM re-entry trap, APR>500% rugpull). DO NOT re-enable without Dixon's
+    // explicit approval. The READ path (getPatternsForLLM) below at line ~754
+    // still injects patterns.json into the LLM context — keep that working.
+    // See: src-vps/patternLearner.js header comment for the full policy.
+    // await maybeLearnPatterns(allTrades);
 
     // Strict hours loss cooldown: if loss in last 2h during strict hours → pause
     if (isStrictHours()) {
