@@ -45,18 +45,18 @@ export async function runHealer() {
     if (manualCloses.length > 0) {
       for (const pos of manualCloses) {
         try {
-          console.log(`  [ManualClose] recording ${pos.id} (${pos.poolName ?? pos.pool?.slice(0,8)})`);
-          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "MANUAL", binRange: pos.binRange, solPriceAtEntry: pos.solPriceAtEntry, solPriceAtClose: pos.solPriceAtEntry });
+          console.log(`  [ExternalClose] recording ${pos.id} (${pos.poolName ?? pos.pool?.slice(0,8)})`);
+          recordTradeClose({ positionId: pos.id, solReturned: pos.solDeployed ?? 0, poolName: pos.poolName, solDeployed: pos.solDeployed, closeReason: "EXTERNAL_CLOSE", binRange: pos.binRange, solPriceAtEntry: pos.solPriceAtEntry, solPriceAtClose: pos.solPriceAtEntry });
           await notifyMessage(
-            `🔄 <b>Manual close detected</b>\n\n` +
+            `🔄 <b>External close detected</b>\n\n` +
             `Pool: ${esc(pos.poolName ?? "?")}\n` +
             `SOL deployed: ${pos.solDeployed ?? "?"}\n\n` +
             `Auto-swapping token sisa...`
           );
         } catch {}
       }
-      console.log(`  [ManualClose] triggering autoSwap for token sisa`);
-      console.log(`[AutoSwap] Triggered after MANUAL close`);
+      console.log(`  [ExternalClose] triggering autoSwap for token sisa`);
+      console.log(`[AutoSwap] Triggered after EXTERNAL_CLOSE`);
       await new Promise(r => setTimeout(r, 10000));
       await autoSwapTokensToSOL(notifyMessage);
     }
@@ -147,7 +147,9 @@ export async function runHealer() {
           if (exit.reason?.includes("out of range")) {
             try { recordOORStrike(closedTrade.poolName ?? pos?.poolName); } catch {}
           }
-          maybeEvolveThresholds(getFullStats().stats);
+          // DISABLED 2026-04-26 by Dixon — thresholdEvolver per-10-trades evolve path
+          // (brain paralysis prevention). DO NOT re-enable.
+          // maybeEvolveThresholds(getFullStats().stats);
           const holdMin = parseFloat(closedTrade.holdDurationHours ?? 0) * 60;
           try { recordPoolClose(pos?.pool, parseFloat(closedTrade.pnlPercent ?? 0), closedTrade.outcome, holdMin); } catch {}
           analyzeClosedTrade(closedTrade, {}).catch(() => {});

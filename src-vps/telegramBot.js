@@ -159,7 +159,9 @@ function registerCommands() {
       const { getFullStats } = await import("./tradeMemory.js");
       const { maybeEvolveThresholds } = await import("./thresholdEvolver.js");
       const { stats } = getFullStats();
-      maybeEvolveThresholds(stats);
+      // DISABLED 2026-04-26 by Dixon — manual /evolve Telegram trigger
+      // (brain paralysis prevention). Command remains responsive but inert.
+      // maybeEvolveThresholds(stats);
       const msg = `🧬 <b>Threshold Evolution</b>\n\nTrades: ${stats.totalTrades ?? 0} | WR: ${stats.hitRate ?? 0}% | avgPnL: ${stats.avgPnlPercent ?? 0}%\n\n<i>Check logs for changes. Agent will use new thresholds next loop.</i>`;
       await ctx.replyWithHTML(msg, mainMenu());
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }

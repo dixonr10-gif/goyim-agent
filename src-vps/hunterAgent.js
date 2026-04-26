@@ -757,7 +757,11 @@ export async function runHunter() {
       poolAnalyses,
       openPositions: getOpenPositions(),
       tradeMemoryContext: getMemoryContextForLLM(),
-      lessonsContext: getRecentLessonsForLLM(8),
+      // DISABLED 2026-04-26 by Dixon — lessons.json stale (last write 2 April, 24 days old)
+      // injecting irrelevant past-pool losses as LLM prior was over-cautious bias.
+      // File renamed to lessons.json.archive.20260402 to make stale state explicit.
+      // llmAgent.js uses `lessonsContext || "No lessons yet"` so undefined is safe.
+      // lessonsContext: getRecentLessonsForLLM(8),
       patternsContext: getPatternsForLLM(),
     });
 
@@ -1162,6 +1166,9 @@ export async function runHunter() {
       await notifyError(`[Hunter] ${err.message}`);
     }
   }
-  try { recordHunterRunResult(hunterOpenedPosition); } catch {}
+  // DISABLED 2026-04-26 by Dixon — thresholdEvolver auto-mutates .env on 5-no-open trigger
+  // (brain paralysis prevention, same family as patternLearner.js fix on 2026-04-25).
+  // DO NOT re-enable. See thresholdEvolver.js + Goyim memory directive.
+  // try { recordHunterRunResult(hunterOpenedPosition); } catch {}
   recordLastRun("hunter");
 }
