@@ -35,12 +35,26 @@ const T = {
   SKIP_ACTIVE_DUMP_PATTERNS: new Set(["DUMPING"]),
   SKIP_H1_ACTIVE_DUMP_PCT: -15,  // h1 < -15% + dump pattern
   SKIP_FEE_APR_COLLAPSE_PCT: 70, // fee APR dropped ≥ 70% from entry
-  SKIP_AGE_TIERS: new Set(["YOLO_<12h"]),
+  // Age-tier YOLO hard-cut removed 2026-04-26 — replaced with score modifier
+  // (Phase 2 redesign). LLM now decides based on total picture, not tier alone.
   ENTER_DRAIN_PCT_MAX: 20,       // < 20% drain OK
   ENTER_PATTERNS: new Set(["ACCUMULATING"]),
   ENTER_RSI_MAX: 55,             // oversold-to-neutral zone
   ENTER_FEE_APR_RATIO_MIN: 0.8,  // fee ≥ 80% of entry-time APR
 };
+
+// Mirror of hunterAgent.ageTierBonus — Phase 2 age tier scoring redesign.
+// Tier as informational signal; magnitudes deliberately subtle (±5/±10).
+function ageTierBonus(tier) {
+  switch (tier) {
+    case 'MATURE_>48h':    return +5;
+    case 'CAUTION_24-48h': return  0;
+    case 'DANGER_12-24h':  return -5;
+    case 'YOLO_<12h':      return -10;
+    case 'UNKNOWN':
+    default:               return -10;
+  }
+}
 
 // ── Enrichment ────────────────────────────────────────────────────────────
 async function fetchDexScreenerPair(poolAddress) {
@@ -167,7 +181,7 @@ SIGNALS TO WEIGH:
 - TVL drain trap: rising Fee/TVL with draining TVL = death spiral (refuse)
 - OOR_LEFT (token dumped) often stabilizes — rebound candidate
 - OOR_RIGHT (token pumped) often retraces — higher re-entry risk
-- Age tier: YOLO<12h > DANGER_12-24h > CAUTION_24-48h > MATURE_>48h
+- Age tier: one of several inputs (already baked into pool score via ±5/±10 modifier; no tier auto-blocks)
 
 Reply ONLY with JSON, no markdown:
 {"action":"ENTER"|"WAIT"|"SKIP","confidence":0-100,"rationale":"2–3 specific signals"}`;
@@ -189,7 +203,7 @@ CURRENT POOL STATE:
 - TVL: $${Math.round(state.tvl)}
 - TVL drain: ${drain.drainPct != null ? drain.drainPct.toFixed(0) : "0"}% [${drain.severity ?? "NONE"}]
 - Fee APR now: ${currentFeeApr.toFixed(1)}%${feeAprAtEntry ? ` (delta ${feeDelta >= 0 ? "+" : ""}${feeDelta.toFixed(1)}%)` : ""}
-- Age tier: ${state.ageTier}${state.ageHours != null ? ` (${state.ageHours.toFixed(1)}h)` : ""}${drainLine}
+- Age tier: ${state.ageTier}${state.ageHours != null ? ` (${state.ageHours.toFixed(1)}h)` : ""} [score modifier ${ageTierBonus(state.ageTier) >= 0 ? "+" : ""}${ageTierBonus(state.ageTier)}]${drainLine}
 
 Decide: ENTER, WAIT, or SKIP.`;
 
@@ -244,10 +258,8 @@ export async function analyzeRebalance(entry, retryCount = 0) {
     }
   }
 
-  // YOLO age tier — too risky for an aggressive re-entry
-  if (T.SKIP_AGE_TIERS.has(state.ageTier)) {
-    return buildDecision("SKIP", `Age tier ${state.ageTier} too risky for rebalance re-entry`, 100, { fastPath: "yolo_tier" });
-  }
+  // YOLO age-tier hard-cut removed 2026-04-26 — Phase 2 redesign converts
+  // age into a score modifier (see ageTierBonus). LLM decides on total picture.
 
   // Clean-setup fast path (ENTER without LLM)
   const drainPct = drain.drainPct ?? 0;

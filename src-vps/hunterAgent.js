@@ -110,6 +110,21 @@ async function fetchMultiTimeframePriceChange(poolAddress) {
   } catch { return null; }
 }
 
+// Token age tier score modifier (Phase 2 redesign 2026-04-26).
+// Replaces previous prompt-only hard cuts. Tier becomes informational signal,
+// LLM decides based on total score. Subtle nudge by design — does NOT override
+// PoolMem ±15-25 reinforcement (separate concern: TODO cap combined positive bonus).
+function ageTierBonus(tier) {
+  switch (tier) {
+    case 'MATURE_>48h':    return +5;
+    case 'CAUTION_24-48h': return  0;
+    case 'DANGER_12-24h':  return -5;
+    case 'YOLO_<12h':      return -10;
+    case 'UNKNOWN':
+    default:               return -10;
+  }
+}
+
 // Pre-LLM score: mirrors the post-LLM weighted scoring (see line ~748) so we
 // can drop weak candidates before paying for an LLM call. Uses cached pool._mtf
 // and poolAnalyses (no extra network fetches). Returns -1 to signal a hard SKIP
@@ -168,9 +183,10 @@ function computePreLLMScore(pool, rawPool, poolAnalysis) {
       });
     } catch {}
   }
-  const combinedAdj = Math.max(poolMemAdj + tvlDrainAdj, -50);
+  const ageBonus = ageTierBonus(pool.ageTier);
+  const combinedAdj = Math.max(poolMemAdj + tvlDrainAdj + ageBonus, -50);
   const finalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
-  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj, tvlDrainAdj, tvlDrain: drain };
+  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj, tvlDrainAdj, ageBonus, tvlDrain: drain };
 }
 
 async function fetchDexScreenerTrending() {
@@ -998,11 +1014,12 @@ export async function runHunter() {
               // cases), recompute cheaply — the Map lookup is O(1).
               const drainPost = pool._tvlDrain ?? computeTvlDrainPenalty(pool.address);
               const tvlDrainAdj = drainPost?.penalty ?? 0;
-              let combinedAdj = poolMemAdj + downtrendAdj + tvlDrainAdj;
+              const ageBonus = ageTierBonus(pool.ageTier);
+              let combinedAdj = poolMemAdj + downtrendAdj + tvlDrainAdj + ageBonus;
               if (combinedAdj < -50) combinedAdj = -50;
               totalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
 
-              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} tvlDrain=${tvlDrainAdj} final=${totalScore}/100`);
+              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} tvlDrain=${tvlDrainAdj} age=${ageBonus >= 0 ? "+" : ""}${ageBonus}(${pool.ageTier ?? "UNKNOWN"}) final=${totalScore}/100`);
 
               // Meme-default override: 10h data showed spot WR 25% avg -6.41%,
               // bidask WR 50% avg +1.28%. When signal is medium (conf 70-79) and
