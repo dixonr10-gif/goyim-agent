@@ -16,6 +16,20 @@ const WINDOW_MS = 24 * 3_600_000;
 
 const QUOTE_TOKENS = ["USDC", "USDT", "SOL", "WSOL", "WBTC", "WETH", "BUSD", "DAI", "MSOL", "JITOSOL"];
 
+// Whitelist of close reasons that should NOT trigger a cooldown timer.
+// Phase 2 redesign 2026-04-27: pool that closes via these reasons isn't
+// structurally bad — position aged out (MAX_HOLD), drifted out of range
+// (OOR/OOR_LEFT/OOR_RIGHT), or fee yield decayed (FEE_APR_FLOOR). These
+// pools deserve immediate re-eligibility on the next hunter cycle.
+// isBlockedByMaxCap (deploys24h cap) remains the concentration governor.
+const NON_LOSS_REASONS = new Set([
+  "MAX_HOLD",
+  "OOR",
+  "OOR_LEFT",
+  "OOR_RIGHT",
+  "FEE_APR_FLOOR",
+]);
+
 function pruneDeploys(entry) {
   if (!entry || typeof entry !== "object") return entry;
   const cutoff = Date.now() - WINDOW_MS;
@@ -124,9 +138,11 @@ export function setCooldown(tokenSymbol, opts = {}) {
   else consecutiveWins = prevWins;
 
   const count = deploys.length;
+  const isNonLoss = NON_LOSS_REASONS.has((reason || "").toUpperCase());
   let hours;
   if (count >= 6) hours = 24;
   else if (count >= 4 && consecutiveWins < 3) hours = 24;
+  else if (isNonLoss) hours = 0;            // pool wasn't bad — immediate re-eligibility
   else if (exitType === "loss") hours = 4;
   else hours = 0.5;
 
@@ -139,7 +155,11 @@ export function setCooldown(tokenSymbol, opts = {}) {
     deploys24h: deploys,
   };
   save(data);
-  console.log(`[Cooldown] ${key}: ${reason ?? "DEFAULT"} → ${formatHoursLabel(hours)} cooldown, consecutiveWins=${consecutiveWins}, deploys24h=${count}`);
+  if (hours === 0 && isNonLoss) {
+    console.log(`[Cooldown] ${key}: ${reason} → 0min cooldown (whitelist), consecutiveWins=${consecutiveWins}, deploys24h=${count}`);
+  } else {
+    console.log(`[Cooldown] ${key}: ${reason ?? "DEFAULT"} → ${formatHoursLabel(hours)} cooldown, consecutiveWins=${consecutiveWins}, deploys24h=${count}`);
+  }
 }
 
 // Hard-block before open if rule 3 bar says "no": covers the case where the
