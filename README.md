@@ -14,9 +14,7 @@ AI-powered autonomous liquidity provision agent for **Meteora DLMM** on Solana. 
 - **RSI Filter** — Skips pools where RSI > 80 (overbought / dump risk) or RSI < 30 (oversold / falling knife) before opening
 - **Pool Memory** — Per-pool win rate tracking with bonus/penalty scoring; avoids repeat losers, boosts proven winners
 - **Strict Hours Mode (14-20 WIB)** — Tighter SL (-4%), TP (+4%), trailing trail (-2%), higher min volume ($200k), shorter max hold (2h), and 2h auto-cooldown after any loss in window
-- **LPAgent PnL Integration** — Accurate USD-precise PnL including unclaimed + claimed fees, replacing approximation-based PnL
 - **Blacklist Auto-Decay** — Temporary blacklisted tokens auto-expire after 7 days (permanent blacklist preserved)
-- **Meridian-style Lessons** — Per-trade observation captured (max 20 retained), surfaced to LLM via prompt context
 - **Exit Reason + Bin Range Tracking** — Every closed trade records `exitReason` (sl/tp/trailing/oor/feeTP/maxHold/feeAPR) and final `binRange` for post-mortem analysis
 - **BidAsk Strategy** — Bin range 40% below / 60% above active bin, biased for upside capture
 - **Spot Strategy** — Symmetrical range with 10% upside buffer for trending pools
