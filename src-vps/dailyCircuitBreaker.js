@@ -1,7 +1,7 @@
 // src-vps/dailyCircuitBreaker.js
 // Advanced circuit breaker (Part 16):
 //  • Profit hit ($150) → auto-swap $90 SOL → USDC + pause 8h
-//  • Loss hit (-$100)  → pause 12h (no swap)
+//  • Loss hit (-$100)  → pause 6h (no swap)
 //  • SOL dump ≤ -7% 24h → close all positions + swap all SOL → USDC + pause indefinite
 //
 // Persisted to data/daily_pnl_tracker.json so state survives PM2 restarts.

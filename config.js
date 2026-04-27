@@ -58,7 +58,7 @@ export const config = {
   // default, while a set env wins. USDC mint is fixed (mainnet).
   profitSecureUsd:    Number(process.env.PROFIT_SECURE_USD)    || 90,
   profitPauseHours:   Number(process.env.PROFIT_PAUSE_HOURS)   || 8,
-  lossPauseHours:     Number(process.env.LOSS_PAUSE_HOURS)     || 12,
+  lossPauseHours:     Number(process.env.LOSS_PAUSE_HOURS)     || 6,
   solDumpWarningPct:  Number(process.env.SOL_DUMP_WARNING_PCT) || -6,
   solDumpTriggerPct:  Number(process.env.SOL_DUMP_TRIGGER_PCT) || -7,
   walletSolReserve:   Number(process.env.WALLET_SOL_RESERVE)   || 0.5,
