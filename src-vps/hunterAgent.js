@@ -125,6 +125,59 @@ function ageTierBonus(tier) {
   }
 }
 
+// Persist per-cycle candidates snapshot for /candidates Telegram view.
+// Only pools that survived to LLM evaluation are written (Decision 2).
+// Decision label per pool inferred from final LLM action.
+const CANDIDATES_FILE = path.resolve("data/candidates.json");
+function persistCandidates(scoredPools, decision) {
+  try {
+    const targetPool = decision?.targetPool ?? null; // address of LLM-chosen pool when action===open
+    const action = (decision?.action ?? "").toLowerCase();
+    const candidates = scoredPools.map(p => {
+      let perPoolDecision;
+      if (action === "open" && targetPool && p.address === targetPool) perPoolDecision = "OPEN";
+      else if (action === "open") perPoolDecision = "NOT_CHOSEN_BY_LLM";
+      else perPoolDecision = "SKIPPED_LLM";
+      const sd = p._scoreDetail ?? {};
+      return {
+        name: p.name,
+        address: p.address,
+        finalScore: sd.finalScore ?? p._preLLMScore ?? null,
+        rawScore: sd.rawScore ?? null,
+        components: {
+          feeScore: sd.feeScore ?? null,
+          volScore: sd.volScore ?? null,
+          momentumScore: sd.momentumScore ?? null,
+          otherScore: sd.otherScore ?? null,
+        },
+        modifiers: {
+          poolMemAdj: sd.poolMemAdj ?? 0,
+          tvlDrainAdj: sd.tvlDrainAdj ?? 0,
+          ageBonus: sd.ageBonus ?? 0,
+        },
+        ageTier: p.ageTier ?? "UNKNOWN",
+        ageHours: p.ageHours ?? null,
+        fees24h: p.fees24h ?? p.fees?.["24h"] ?? null,
+        tvl: p.tvl ?? null,
+        organicScore: p.organicScore ?? null,
+        decision: perPoolDecision,
+        llmConfidence: perPoolDecision === "OPEN" ? (decision?.confidence ?? null) : null,
+        llmRationaleSnippet: perPoolDecision === "OPEN" ? String(decision?.rationale ?? "").slice(0, 200) : null,
+      };
+    });
+    const payload = {
+      lastScannedAt: Date.now(),
+      cycleCount: scoredPools.length,
+      llmEvaluatedCount: candidates.length,
+      llmAction: action || null,
+      candidates,
+    };
+    fs.writeFileSync(CANDIDATES_FILE, JSON.stringify(payload, null, 2));
+  } catch (e) {
+    console.error("[Candidates] Persist failed:", e.message);
+  }
+}
+
 // Pre-LLM score: mirrors the post-LLM weighted scoring (see line ~748) so we
 // can drop weak candidates before paying for an LLM call. Uses cached pool._mtf
 // and poolAnalyses (no extra network fetches). Returns -1 to signal a hard SKIP
@@ -730,6 +783,7 @@ export async function runHunter() {
       }
       pool._preLLMScore = finalScore;
       pool._tvlDrain = result.tvlDrain;
+      pool._scoreDetail = result; // full per-pool scoring breakdown for /candidates view
     }
     if (preFilteredPools.length === 0) { console.log("⚠️ All pools failed pre-LLM score filter."); return; }
     console.log(`  [Hunter] ${preFilteredPools.length} pool(s) passed pre-LLM score filter`);
@@ -796,6 +850,9 @@ export async function runHunter() {
         }
       } catch (e) { console.warn("[smartWallets] check failed:", e.message); }
     }
+
+    // Persist candidates snapshot for /candidates Telegram view (Decision 2: LLM-evaluated only)
+    try { persistCandidates(preFilteredPools, decision); } catch (e) { console.error("[Candidates] write skipped:", e.message); }
 
     console.log("\n📊 Hunter Decision:");
     console.log(`  Action:     ${decision.action.toUpperCase()}`);

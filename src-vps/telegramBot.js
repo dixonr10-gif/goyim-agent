@@ -169,26 +169,13 @@ function registerCommands() {
 
   bot.command("candidates", async (ctx) => {
     try {
-      const { getLastCandidates } = await import("./poolScanner.js");
-      const pools = getLastCandidates();
-      if (!pools.length) { await ctx.reply("📭 No candidates yet. Wait for next Hunter scan.", mainMenu()); return; }
-      const fmtMcap = (n) => {
-        if (!n || n <= 0) return "?";
-        if (n >= 1e9) return `$${(n/1e9).toFixed(1)}B`;
-        if (n >= 1e6) return `$${(n/1e6).toFixed(1)}M`;
-        return `$${(n/1000).toFixed(0)}k`;
-      };
-      let msg = `<b>🎯 Pool Candidates (${pools.length})</b>\n${"─".repeat(25)}\n\n`;
-      pools.slice(0, 8).forEach((p, i) => {
-        const vol = p.volume?.["24h"] ?? 0;
-        const tvl = p.tvl ?? 0;
-        const apr = ((p.apr ?? 0) * 100).toFixed(1);
-        const mcap = p.dexPair?.marketCap ?? p.dexPair?.fdv ?? 0;
-        msg += `${i + 1}. <b>${esc(p.name)}</b>${p.uptrend ? " 🚀" : ""}\n`;
-        msg += `   Vol: $${(vol / 1000).toFixed(0)}k | TVL: $${(tvl / 1000).toFixed(0)}k | APR: ${apr}% | Organic: ${p.organicScore ?? "?"}/100 | MCap: ${fmtMcap(mcap)}\n`;
-        msg += `   📊 https://dexscreener.com/solana/${p.address}\n\n`;
-      });
-      await ctx.replyWithHTML(msg, mainMenu());
+      const { formatPage } = await import("./candidatesView.js");
+      const result = formatPage(1);
+      const opts = { parse_mode: "HTML", ...mainMenu() };
+      if (result.buttons.length > 0) {
+        opts.reply_markup = { inline_keyboard: [result.buttons] };
+      }
+      await ctx.reply(result.text, opts);
     } catch (err) { await ctx.reply(`❌ ${err.message}`); }
   });
 
@@ -810,6 +797,30 @@ function registerCallbacks() {
       if (wo.length) { msg += `<b>OOR:</b>\n`; for (const [s, c] of wo.sort((a, b) => b[1] - a[1])) msg += `  ${s}: ${c} strikes\n`; }
       await ctx.editMessageText(msg, { parse_mode: "HTML", ...mainMenu() });
     } catch (e) { await ctx.editMessageText(`❌ ${e.message}`, { ...mainMenu() }); }
+  });
+
+  // Candidates view (replaces Watchlist button on the main menu).
+  // /watchlist slash command intentionally preserved for defensive risk view.
+  bot.action(/^btn_candidates_p(\d+)$/, async (ctx) => {
+    try {
+      const page = parseInt(ctx.match[1], 10) || 1;
+      const { formatPage } = await import("./candidatesView.js");
+      const result = formatPage(page);
+      const reply_markup = result.buttons.length > 0
+        ? { inline_keyboard: [result.buttons] }
+        : mainMenu().reply_markup;
+      const opts = { parse_mode: "HTML", reply_markup };
+      try {
+        await ctx.editMessageText(result.text, opts);
+      } catch (editErr) {
+        // Fallback: send fresh message if edit fails (e.g., message too old)
+        await ctx.reply(result.text, opts);
+      }
+      await ctx.answerCbQuery();
+    } catch (e) {
+      console.error("[btn_candidates] handler error:", e.message);
+      try { await ctx.answerCbQuery("Error loading candidates"); } catch {}
+    }
   });
 
   bot.action("btn_cooldown", async (ctx) => {
@@ -1583,7 +1594,7 @@ function mainMenu() {
     [Markup.button.callback("👛 Wallet", "wallet"), Markup.button.callback("🏆 Win Rate", "winrate")],
     [Markup.button.callback("📊 Daily PnL", "daily_pnl"), Markup.button.callback("📜 History", "history")],
     [Markup.button.callback("📚 Lessons", "lessons"), Markup.button.callback("🔄 Refresh", "refresh")],
-    [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("👀 Watchlist", "btn_watchlist")],
+    [Markup.button.callback("🚫 Blacklist", "btn_blacklist"), Markup.button.callback("📋 Candidates", "btn_candidates_p1")],
     [Markup.button.callback("⏳ Cooldown", "btn_cooldown"), Markup.button.callback("📋 Logs", "btn_logs")],
     [Markup.button.callback("🔄 Restart", "pm2_restart"), Markup.button.callback("⚙️ PM2 Status", "pm2_status")],
     [
