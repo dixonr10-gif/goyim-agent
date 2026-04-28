@@ -110,6 +110,41 @@ async function fetchMultiTimeframePriceChange(poolAddress) {
   } catch { return null; }
 }
 
+// Token-level 24h loss counter — counts closed trades with PnL<0 for the
+// given token symbol across ALL pool addresses (Meteora often has multiple
+// pools per token with different bin steps). PoolMem keys by pool address
+// so it has a sibling-pool blind spot; this helper covers it. Reads
+// data/trade_memory.json (not trades.json — that file doesn't exist in
+// this codebase). Fields: poolName + closedAt + pnlPercent.
+const TRADE_MEMORY_FILE_FOR_LOSS = path.resolve("data/trade_memory.json");
+function getTokenLossCount24h(symbol) {
+  if (!symbol) return 0;
+  try {
+    const raw = JSON.parse(fs.readFileSync(TRADE_MEMORY_FILE_FOR_LOSS, "utf8"));
+    const trades = Array.isArray(raw) ? raw : (raw.trades || raw.history || raw.closedTrades || []);
+    const cutoff = Date.now() - (24 * 60 * 60 * 1000);
+    const symUpper = String(symbol).toUpperCase();
+    let count = 0;
+    for (const t of trades) {
+      if (!t || typeof t !== "object") continue;
+      const poolName = String(t.poolName || t.pool_name || "");
+      if (!poolName) continue;
+      const tradeSymbol = poolName.split(/[-\/]/)[0].toUpperCase();
+      if (tradeSymbol !== symUpper) continue;
+      const closedAt = t.closedAt || t.closed_at;
+      if (!closedAt) continue;
+      const closedMs = new Date(String(closedAt).replace("Z", "+00:00")).getTime();
+      if (!Number.isFinite(closedMs) || closedMs < cutoff) continue;
+      const pnl = t.pnlPercent ?? t.pnlPct ?? t.pnl_pct;
+      if (typeof pnl === "number" && pnl < 0) count++;
+    }
+    return count;
+  } catch (e) {
+    console.error("[TokenLossBlock] read error:", e.message);
+    return 0; // fail safe — don't block on read error
+  }
+}
+
 // Token age tier score modifier (Phase 2 redesign 2026-04-26).
 // Replaces previous prompt-only hard cuts. Tier becomes informational signal,
 // LLM decides based on total score. Subtle nudge by design — does NOT override
@@ -521,6 +556,17 @@ export async function runHunter() {
       if (symbol && isBlockedByMaxCap(symbol)) {
         console.log(`  ⏭️ Skip ${pool.name}: ${symbol} max-deploy cap hit for 24h`);
         return false;
+      }
+      // Token-level loss block (Phase 2 ship 2026-04-28). Catches the
+      // sibling-pool blind spot — PoolMem keys by address, so a token can
+      // accumulate losses on one pool address while a sibling address still
+      // shows fresh WR. Threshold ≥3 losses in 24h.
+      if (symbol) {
+        const tokenLossCount = getTokenLossCount24h(symbol);
+        if (tokenLossCount >= 3) {
+          console.log(`  ⏭️ [TokenLossBlock] ${symbol}: ${tokenLossCount} losses in 24h, skipping ${pool.name}`);
+          return false;
+        }
       }
       if (symbol && isOnCooldown(symbol)) {
         console.log(`  ⏭️ Skip ${pool.name}: ${symbol} on cooldown (${getCooldownRemaining(symbol)} remaining)`);
