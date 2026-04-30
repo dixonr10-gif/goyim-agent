@@ -29,8 +29,17 @@ const AUTO_SWAP_ENABLED = process.env.AUTO_SWAP_ENABLED !== "false";
 const AUTO_SWAP_MIN_USD = Number(process.env.AUTO_SWAP_MIN_USD) || 1;
 const PENDING_SWAPS_FILE = path.resolve("data/pending_swaps.json");
 const FAILED_SWAPS_FILE  = path.resolve("data/failed_swaps.json");
-const FAIL_COOLDOWN_MS        = 24 * 60 * 60 * 1000; // slippage 3x fail → 24h
+const FAIL_COOLDOWN_MS        = 24 * 60 * 60 * 1000; // generic / slippage 3x-escalated → 24h
 const NO_ROUTES_COOLDOWN_MS   =  2 * 60 * 60 * 1000; // route depth gap → 2h (liquidity can recover fast)
+const SLIPPAGE_COOLDOWN_MS    =  1 * 60 * 60 * 1000; // single slippage failure → 1h (often transient timing)
+const FRESH_BALANCE_MULTIPLIER = 1.5; // current ≥ 1.5× failed → assume new deposit, bypass cooldown
+
+function isSlippageError(reason) {
+  return /0x1771|ExceededSlippage|Exceeded[_ ]?[Ss]lippage|slippage tolerance exceeded/i.test(reason ?? "");
+}
+function isNoRoutesError(reason) {
+  return /NO_ROUTES_FOUND|No routes found/i.test(reason ?? "");
+}
 
 function loadPendingSwaps() {
   try { return JSON.parse(fs.readFileSync(PENDING_SWAPS_FILE, "utf-8")); } catch { return []; }
@@ -59,23 +68,70 @@ function saveFailedSwaps(swaps) {
   try { fs.mkdirSync(path.dirname(FAILED_SWAPS_FILE), { recursive: true }); fs.writeFileSync(FAILED_SWAPS_FILE, JSON.stringify(swaps, null, 2)); } catch {}
 }
 function addFailedSwap({ symbol, tokenMint, amount, reason, cooldownMs }) {
+  const existing = loadFailedSwaps().find(s => s.tokenMint === tokenMint);
   const list = loadFailedSwaps().filter(s => s.tokenMint !== tokenMint);
+
+  // Auto-classify from reason when caller didn't pin cooldown explicitly.
+  // NO_ROUTES caller still passes cooldownMs directly and keeps its behavior.
+  let finalCooldown = cooldownMs;
+  let slippageAttempts;
+  if (finalCooldown == null) {
+    if (isNoRoutesError(reason)) {
+      finalCooldown = NO_ROUTES_COOLDOWN_MS;
+    } else if (isSlippageError(reason)) {
+      const prev = existing && isSlippageError(existing.reason) ? (existing.slippageAttempts ?? 1) : 0;
+      slippageAttempts = prev + 1;
+      if (slippageAttempts >= 3) {
+        finalCooldown = FAIL_COOLDOWN_MS;
+        console.log(`[AutoSwap] ${symbol ?? tokenMint.slice(0,8)}: slippage #${slippageAttempts} → escalate to 24h cooldown`);
+      } else {
+        finalCooldown = SLIPPAGE_COOLDOWN_MS;
+        console.log(`[AutoSwap] ${symbol ?? tokenMint.slice(0,8)}: slippage #${slippageAttempts}/3 → 1h cooldown`);
+      }
+    } else {
+      finalCooldown = FAIL_COOLDOWN_MS;
+    }
+  }
+
   list.push({
     symbol: symbol ?? null,
     tokenMint,
     amount,
     failedAt: new Date().toISOString(),
     reason: reason ?? null,
-    cooldownMs: cooldownMs ?? FAIL_COOLDOWN_MS,
+    cooldownMs: finalCooldown,
+    ...(slippageAttempts ? { slippageAttempts } : {}),
   });
   saveFailedSwaps(list);
 }
-function isFailedRecently(tokenMint) {
+function isFailedRecently(tokenMint, currentAmount = null) {
   const list = loadFailedSwaps();
   const match = list.find(s => s.tokenMint === tokenMint);
   if (!match?.failedAt) return false;
   const window = match.cooldownMs ?? FAIL_COOLDOWN_MS;
-  return (Date.now() - new Date(match.failedAt).getTime()) < window;
+  if ((Date.now() - new Date(match.failedAt).getTime()) >= window) return false;
+
+  // Fresh-deposit bypass: if current wallet balance ≥ 1.5× the failed amount,
+  // a new close funded the wallet and the prior failure shouldn't gate it.
+  if (currentAmount != null && match.amount != null) {
+    try {
+      const curr = BigInt(String(currentAmount));
+      const failed = BigInt(String(match.amount));
+      // curr / failed ≥ 1.5  ⇔  curr * 2 ≥ failed * 3
+      if (failed > 0n && curr * 2n >= failed * 3n) {
+        console.log(`[AutoSwap] ${tokenMint.slice(0,8)}... fresh-balance bypass: current ${curr} ≥ ${FRESH_BALANCE_MULTIPLIER}× failed ${failed}`);
+        return false;
+      }
+    } catch {}
+  }
+  return true;
+}
+function formatCooldownRemaining(match) {
+  const window = match.cooldownMs ?? FAIL_COOLDOWN_MS;
+  const remainMs = Math.max(0, window - (Date.now() - new Date(match.failedAt).getTime()));
+  const h = Math.floor(remainMs / 3_600_000);
+  const m = Math.floor((remainMs % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 async function fetchDexScreenerPrice(mint) {
@@ -301,8 +357,11 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
       const mintShort = t.mint.slice(0, 8);
       // Skip tokens that already hard-failed in the last 24h so we don't
       // flood logs with the same dead swap every healer cycle.
-      if (isFailedRecently(t.mint)) {
-        console.log(`[AutoSwap] ${mintShort}... skipped — in failed_swaps (24h cooldown)`);
+      if (isFailedRecently(t.mint, t.amount)) {
+        const match = loadFailedSwaps().find(s => s.tokenMint === t.mint);
+        const remaining = match ? formatCooldownRemaining(match) : "?";
+        const reasonTag = isSlippageError(match?.reason) ? "slippage" : isNoRoutesError(match?.reason) ? "no-routes" : "failed";
+        console.log(`[AutoSwap] ${mintShort}... skipped — ${reasonTag} cooldown ${remaining} remaining`);
         continue;
       }
       const { price: dexPrice, symbol: dexSymbol } = await fetchDexScreenerPrice(t.mint);
@@ -450,7 +509,9 @@ export async function autoSwapTokensToSOL(notifyFn = null) {
         addFailedSwap({ symbol: token.symbol, tokenMint: token.mint, amount: token.amount, reason: lastReason });
         // Clean up any legacy pending-swap entry so retryPendingSwaps stops picking it up.
         removePendingSwap(token.mint);
-        await notifyTemp(`⚠️ Auto-swap gagal 3x: ${token.symbol} (~$${token.usdValue.toFixed(2)}) → skip 24h`);
+        const match = loadFailedSwaps().find(s => s.tokenMint === token.mint);
+        const remaining = match ? formatCooldownRemaining(match) : "?";
+        await notifyTemp(`⚠️ Auto-swap gagal 3x: ${token.symbol} (~$${token.usdValue.toFixed(2)}) → cooldown ${remaining}`);
       } else {
         removePendingSwap(token.mint);
       }
