@@ -418,7 +418,17 @@ export async function evaluateExits(openPositions, getPoolData, getPositionValue
       // entered pool sits at 10–30%, a cold pool at <1%.
       //
       // Missing data → permissive skip (no exit). Real 0% (dead pool) → exit.
-      if (getPoolData) {
+      //
+      // Part 29A: Pool-wide fee/TVL is misleading when this position is OOR
+      // with $0 accrued — the pool may be hot, but swaps are happening outside
+      // the position's range so it earns nothing. Skip the hold/exit decision
+      // entirely and fall through to OOR grace logic, which is the right exit
+      // path for that state.
+      const isOOR = !!position.oorSince;
+      const unclaimedFeesUsd = position._unclaimedFeesUsd ?? 0;
+      if (isOOR && unclaimedFeesUsd < 0.01) {
+        console.log(`  [FeeFloor] ${position.id}: SKIP — OOR + zero fees (pool feeTvl irrelevant to this position)`);
+      } else if (getPoolData) {
         const poolData = await getPoolData(position.pool).catch(() => null);
         if (!poolData) {
           console.log(`  ⏳ ${position.id}: fee-floor check skipped (pool data unavailable)`);

@@ -933,6 +933,7 @@ export async function getPositionValue(position) {
     // Store detailed breakdown on position for use by exitStrategy
     position._posValueUsd = totalUsd;
     position._solPriceNow = solPriceUsd;
+    position._unclaimedFeesUsd = unclaimedFeesUsd;
     position._badData = false;
 
     return totalSolEquiv > 0 ? totalSolEquiv : position.solDeployed;
