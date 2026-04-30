@@ -111,6 +111,56 @@ export function recordTvlDrainEvent({ poolAddress, symbol, drainPct, lookbackMin
   }
 }
 
+// Cumulative drain history — counts past drain events recorded for a pool
+// over a 7-day window. Repeated drains indicate persistent LP instability
+// that the active 1h/3h/6h drain check (computeTvlDrainPenalty) misses
+// because it only sees instantaneous slope.
+//
+// Cached for 60s to avoid re-reading and re-parsing the events file on
+// every pool scored within a single Hunter cycle (typically 50+ pools).
+const CUMULATIVE_DRAIN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7d
+const CUMULATIVE_DRAIN_CACHE_TTL_MS = 60_000;
+let cumulativeDrainCache = { ts: 0, byPool: null };
+
+function loadCumulativeDrainIndex() {
+  const now = Date.now();
+  if (cumulativeDrainCache.byPool && (now - cumulativeDrainCache.ts) < CUMULATIVE_DRAIN_CACHE_TTL_MS) {
+    return cumulativeDrainCache.byPool;
+  }
+  const byPool = new Map();
+  try {
+    if (!fs.existsSync(TVL_DRAIN_EVENTS_FILE)) {
+      cumulativeDrainCache = { ts: now, byPool };
+      return byPool;
+    }
+    const events = JSON.parse(fs.readFileSync(TVL_DRAIN_EVENTS_FILE, "utf-8"));
+    if (!Array.isArray(events)) {
+      cumulativeDrainCache = { ts: now, byPool };
+      return byPool;
+    }
+    const cutoff = now - CUMULATIVE_DRAIN_WINDOW_MS;
+    for (const e of events) {
+      if (!e?.pool) continue;
+      const t = e.timestamp ? new Date(e.timestamp).getTime() : 0;
+      if (!t || t < cutoff) continue;
+      byPool.set(e.pool, (byPool.get(e.pool) ?? 0) + 1);
+    }
+  } catch {}
+  cumulativeDrainCache = { ts: now, byPool };
+  return byPool;
+}
+
+export function getCumulativeDrainPenalty(poolAddress) {
+  if (!poolAddress) return { count: 0, penalty: 0, tier: "NONE" };
+  const idx = loadCumulativeDrainIndex();
+  const count = idx.get(poolAddress) ?? 0;
+  let penalty = 0, tier = "NONE";
+  if (count >= 20)      { penalty = -20; tier = "CRITICAL"; }
+  else if (count >= 10) { penalty = -10; tier = "HIGH"; }
+  else if (count >= 5)  { penalty = -5;  tier = "MEDIUM"; }
+  return { count, penalty, tier };
+}
+
 // Snapshot (for /status-style inspection). Small by design — no per-datapoint dump.
 export function getTvlHistorySnapshot() {
   return {

@@ -24,7 +24,7 @@ import { getCandles, getTASignal, getTAFromPriceChanges } from "./technicalAnaly
 import { isStrictHours, formatWIB, getWIBHour } from "./timeHelper.js";
 import { isPaused as isCircuitBreakerPaused, getPauseReason as getCircuitBreakerReason } from "./dailyCircuitBreaker.js";
 import { getTokenAgeHours, classifyAgeTier, extractTokenMint } from "./tokenAge.js";
-import { computeTvlDrainPenalty, recordTvlDrainEvent } from "./tvlHistory.js";
+import { computeTvlDrainPenalty, recordTvlDrainEvent, getCumulativeDrainPenalty } from "./tvlHistory.js";
 
 let hunterIteration = 0;
 let lowBalanceCooldownUntil = 0;
@@ -189,6 +189,8 @@ function persistCandidates(scoredPools, decision) {
           poolMemAdj: sd.poolMemAdj ?? 0,
           tvlDrainAdj: sd.tvlDrainAdj ?? 0,
           ageBonus: sd.ageBonus ?? 0,
+          postDumpPenalty: sd.postDumpPenalty ?? 0,
+          cumDrainAdj: sd.cumDrainAdj ?? 0,
         },
         ageTier: p.ageTier ?? "UNKNOWN",
         ageHours: p.ageHours ?? null,
@@ -272,9 +274,12 @@ function computePreLLMScore(pool, rawPool, poolAnalysis) {
     } catch {}
   }
   const ageBonus = ageTierBonus(pool.ageTier);
-  const combinedAdj = Math.max(poolMemAdj + tvlDrainAdj + ageBonus, -50);
+  const postDumpPenalty = (pool.chart?.pattern === "POST_DUMP_TRAP") ? -25 : 0;
+  const cumDrain = getCumulativeDrainPenalty(pool.address);
+  const cumDrainAdj = cumDrain.penalty;
+  const combinedAdj = Math.max(poolMemAdj + tvlDrainAdj + ageBonus + postDumpPenalty + cumDrainAdj, -60);
   const finalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
-  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj, tvlDrainAdj, ageBonus, tvlDrain: drain };
+  return { finalScore, rawScore, feeScore, volScore, momentumScore, otherScore, poolMemAdj, tvlDrainAdj, ageBonus, postDumpPenalty, cumDrainAdj, cumDrain, tvlDrain: drain };
 }
 
 async function fetchDexScreenerTrending() {
@@ -355,6 +360,7 @@ async function analyzeChart(poolAddress, dexPair) {
   const m5 = parseFloat(pair.priceChange?.m5 ?? "0");
   const h1 = parseFloat(pair.priceChange?.h1 ?? "0");
   const h6 = parseFloat(pair.priceChange?.h6 ?? "0");
+  const h24 = parseFloat(pair.priceChange?.h24 ?? "0");
 
   const vol5m = pair.volume?.m5 ?? 0;
   const vol1h = pair.volume?.h1 ?? 0;
@@ -374,7 +380,14 @@ async function analyzeChart(poolAddress, dexPair) {
 
   // Pattern classification
   let pattern = "UNKNOWN";
-  if (h1 > 5 && h6 < 10 && volumeTrend === "INCREASING") {
+  // Post-dump trap override: catastrophic 24h dump still bleeding in 6h.
+  // Catches rugs the candle reader otherwise mislabels as ACCUMULATING when
+  // the post-rug flatline produces small h1 + stable volume. Must be checked
+  // first — any other label here would let the LLM see "ACCUMULATING" and
+  // treat post-rug consolidation as an entry signal (SCAM-SOL 2026-04-30).
+  if (h24 <= -40 && h6 < 0) {
+    pattern = "POST_DUMP_TRAP";
+  } else if (h1 > 5 && h6 < 10 && volumeTrend === "INCREASING") {
     pattern = "EARLY_PUMP";
   } else if (h6 > 20 && (h1 < h6 * 0.5 || m5 < 0) && volumeTrend !== "INCREASING") {
     pattern = "PUMP_EXHAUSTION";
@@ -390,7 +403,7 @@ async function analyzeChart(poolAddress, dexPair) {
   const p1 = p2 * (1 - Math.abs(m5) / 200);
   const last3Candles = `$${p1.toPrecision(4)} vol=$${Math.round(vol5m * 0.9)} → $${p2.toPrecision(4)} vol=$${Math.round(vol5m * 0.95)} → $${p3.toPrecision(4)} vol=$${Math.round(vol5m)}`;
 
-  return { priceTrend, volumeTrend, pattern, last3Candles };
+  return { priceTrend, volumeTrend, pattern, last3Candles, h6, h24 };
 }
 
 const DAILY_LOSS_LIMIT_SOL = 5;
@@ -865,6 +878,10 @@ export async function runHunter() {
     for (const fp of formattedPools) {
       fp.ta = taMap.get(fp.address) ?? null;
       fp.chart = chartMap.get(fp.address) ?? null;
+      // Part 28: surface cumulative drain history to LLM context
+      const cd = getCumulativeDrainPenalty(fp.address);
+      fp.cumDrainCount = cd.count;
+      fp.cumDrainTier = cd.tier;
     }
 
     // LLM decision
@@ -1118,11 +1135,18 @@ export async function runHunter() {
               const drainPost = pool._tvlDrain ?? computeTvlDrainPenalty(pool.address);
               const tvlDrainAdj = drainPost?.penalty ?? 0;
               const ageBonus = ageTierBonus(pool.ageTier);
-              let combinedAdj = poolMemAdj + downtrendAdj + tvlDrainAdj + ageBonus;
-              if (combinedAdj < -50) combinedAdj = -50;
+              // Part 28: POST_DUMP_TRAP override (-25) + cumulative drain history (-5/-10/-20).
+              const postDumpPenalty = (pool.chart?.pattern === "POST_DUMP_TRAP") ? -25 : 0;
+              const cumDrain = getCumulativeDrainPenalty(pool.address);
+              const cumDrainAdj = cumDrain.penalty;
+              if (cumDrainAdj < 0) {
+                console.log(`  [CumDrain] ${pool.address.slice(0,8)} count=${cumDrain.count} tier=${cumDrain.tier} penalty=${cumDrainAdj}`);
+              }
+              let combinedAdj = poolMemAdj + downtrendAdj + tvlDrainAdj + ageBonus + postDumpPenalty + cumDrainAdj;
+              if (combinedAdj < -60) combinedAdj = -60;
               totalScore = Math.max(0, Math.min(100, rawScore + combinedAdj));
 
-              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} tvlDrain=${tvlDrainAdj} age=${ageBonus >= 0 ? "+" : ""}${ageBonus}(${pool.ageTier ?? "UNKNOWN"}) final=${totalScore}/100`);
+              console.log(`  [Score] ${pool.name}: fee=${feeScore} vol=${volScore} momentum=${momentumScore} other=${otherScore} → raw=${rawScore} downtrend=${downtrendAdj} poolMem=${poolMemAdj} tvlDrain=${tvlDrainAdj} age=${ageBonus >= 0 ? "+" : ""}${ageBonus}(${pool.ageTier ?? "UNKNOWN"}) postDump=${postDumpPenalty} cumDrain=${cumDrainAdj}(${cumDrain.count}/${cumDrain.tier}) final=${totalScore}/100`);
 
               // Meme-default override: 10h data showed spot WR 25% avg -6.41%,
               // bidask WR 50% avg +1.28%. When signal is medium (conf 70-79) and

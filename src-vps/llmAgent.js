@@ -206,6 +206,14 @@ function buildUserPrompt({ pools, poolAnalyses, openPositions, tradeMemoryContex
       line += `\n    - Volume trend: ${p.chart.volumeTrend}`;
       line += `\n    - Pattern: ${p.chart.pattern}`;
       line += `\n    - Last 3 candles: ${p.chart.last3Candles}`;
+      if (p.chart.pattern === "POST_DUMP_TRAP") {
+        const h24Str = (typeof p.chart.h24 === "number") ? p.chart.h24.toFixed(1) : "?";
+        const h6Str = (typeof p.chart.h6 === "number") ? p.chart.h6.toFixed(1) : "?";
+        line += `\n    ⚠️ POST_DUMP_TRAP DETECTED: Token shows post-rug flatline, NOT accumulation phase. Price dumped ${h24Str}% in 24h and still bleeding (${h6Str}% in 6h). Volume on dead pool ≠ recovery signal. Catastrophic loss risk. STRONGLY skeptical default — require exceptional evidence to enter.`;
+      }
+    }
+    if (p.cumDrainCount && p.cumDrainCount >= 5) {
+      line += `\n    ⚠️ CUMULATIVE DRAIN HISTORY: Pool has ${p.cumDrainCount} TVL drain events in last 7 days (tier ${p.cumDrainTier}). Repeated liquidity instability — high reserve recommended.`;
     }
     return line;
   }).join("\n\n");
